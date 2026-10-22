@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { NextResponse } from "next/server";
 import { authenticatedUser, mutationUser } from "@/lib/control-plane";
-import { listPortainerContainers } from "@/lib/portainer";
+import { listDockerContainers } from "@/lib/docker";
 
 const root = process.env.VESSEL_COMPOSE_ROOT ?? "/app/data/compose-projects";
 const sourceRoot = process.env.VESSEL_COMPOSE_SOURCE_ROOT ?? "/app/compose-host";
@@ -28,7 +28,7 @@ async function saveCompose(name: string, yaml: string) {
 }
 async function discoveredComposeFile(name: string): Promise<string | null> {
   if (!sourceHostRoot) return null;
-  const containers = await listPortainerContainers();
+  const containers = await listDockerContainers();
   const container = containers.find((item) => item.Labels?.["com.docker.compose.project"] === name);
   const configured = container?.Labels?.["com.docker.compose.project.config_files"]?.split(",")[0]?.trim();
   if (!configured) return null;
@@ -41,7 +41,7 @@ export async function getCompose(request: Request) {
   const name = new URL(request.url).searchParams.get("name");
   if (!name) {
     try {
-      const containers = await listPortainerContainers();
+      const containers = await listDockerContainers();
       const projects = new Map<string, { name: string; source: string; workingDir: string | null; configFiles: string[]; containers: string[] }>();
       for (const container of containers) {
         const labels = container.Labels ?? {};

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-export type CloneJobStep = "queued" | "dumping" | "creating_database" | "restoring" | "pulling_image" | "creating_container" | "starting" | "completed" | "failed";
+export type CloneJobStep = "queued" | "dumping" | "creating_resource" | "restoring" | "pulling_image" | "creating_container" | "starting" | "completed" | "failed";
 export type CloneJob = {
   id: string;
   kind: "duplicate" | "image";
@@ -8,12 +8,12 @@ export type CloneJob = {
   step: CloneJobStep;
   message: string;
   percent: number;
-  currentTable: string | null;
+  currentItem: string | null;
   errors: number;
   startedAt: string;
   finishedAt: string | null;
-  sharedDatabase?: boolean;
-  result?: { name: string; port: number; database: string; databaseCloned: boolean };
+  sharedDataSource?: boolean;
+  result?: { name: string; port: number; dataResource: string; dataCopied: boolean };
 };
 
 const store = new Map<string, CloneJob>();
@@ -30,13 +30,13 @@ export function getCloneJob(id: string): CloneJob | null {
 export function startOperationJob(kind: CloneJob["kind"], task: (update: (patch: Partial<CloneJob>) => void) => Promise<CloneJob["result"]>, retryTask?: () => CloneJob): CloneJob {
   const job: CloneJob = {
     id: randomUUID(), kind, status: "running", step: "queued", message: "Trabajo en cola", percent: 0,
-    currentTable: null, errors: 0, startedAt: new Date().toISOString(), finishedAt: null,
+    currentItem: null, errors: 0, startedAt: new Date().toISOString(), finishedAt: null,
   };
   store.set(job.id, job);
   if (retryTask) retryTasks.set(job.id, retryTask);
   const update = (patch: Partial<CloneJob>) => Object.assign(job, patch);
   void task(update).then((result) => {
-    update({ status: "completed", step: "completed", message: kind === "image" ? "Operación completada" : result?.databaseCloned ? "Servicio y base restaurados" : "Aplicación creada con la misma BD", percent: 100, finishedAt: new Date().toISOString(), result });
+    update({ status: "completed", step: "completed", message: kind === "image" ? "Operación completada" : result?.dataCopied ? "Servicio y datos copiados" : "Aplicación creada conservando su origen de datos", percent: 100, finishedAt: new Date().toISOString(), result });
   }).catch((error) => {
     update({ status: "failed", step: "failed", message: error instanceof Error ? error.message : "El trabajo falló", finishedAt: new Date().toISOString() });
   });
@@ -47,8 +47,8 @@ export function retryOperationJob(id: string): CloneJob | null {
   return retryTasks.get(id)?.() ?? null;
 }
 
-export function startCloneJob(task: (update: (patch: Partial<CloneJob>) => void) => Promise<CloneJob["result"]>, sharedDatabase = false): CloneJob {
+export function startCloneJob(task: (update: (patch: Partial<CloneJob>) => void) => Promise<CloneJob["result"]>, sharedDataSource = false): CloneJob {
   const job = startOperationJob("duplicate", task);
-  job.sharedDatabase = sharedDatabase;
+  job.sharedDataSource = sharedDataSource;
   return job;
 }

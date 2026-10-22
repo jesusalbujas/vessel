@@ -10,7 +10,7 @@ COPY package*.json ./
 RUN npm install
 
 FROM dependencies AS development
-RUN apk add --no-cache postgresql16-client docker-cli docker-cli-compose
+RUN apk add --no-cache postgresql16-client mariadb-client docker-cli docker-cli-compose
 COPY backend/go.mod ./backend/go.mod
 COPY backend/main.go ./backend/main.go
 
@@ -23,7 +23,7 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apk add --no-cache postgresql16-client docker-cli docker-cli-compose
+RUN apk add --no-cache postgresql16-client mariadb-client docker-cli docker-cli-compose
 COPY --from=backend-builder /out/vessel-backend /usr/local/bin/vessel-backend
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./

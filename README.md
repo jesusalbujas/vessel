@@ -31,7 +31,7 @@ docker compose up -d --build
 
 Open [http://127.0.0.1:55300](http://127.0.0.1:55300).
 
-The local Compose file does not require Portainer or a `.env` file. It mounts the local Docker socket and stores Vessel metadata in `./data`.
+The local Compose file connects Vessel directly to Docker Engine through the mounted local socket and stores Vessel metadata in `./data`.
 
 No host address is hard-coded. Published service links use the hostname of the request by default; set `PUBLIC_SERVICE_HOST` only when Vessel is behind a proxy or needs a different public hostname. To inspect Compose files outside Vessel's managed directory, set `VESSEL_COMPOSE_HOST_ROOT` to an absolute directory on the Docker host before starting Compose. Without it, external Compose projects are still discovered by Docker labels, but their source files are not editable through Vessel.
 
@@ -54,7 +54,7 @@ The image contains two coordinated processes:
 1. The Go control plane listens internally on `127.0.0.1:9100` and talks directly to Docker Engine.
 2. The Next.js server provides the public web interface on port `3000`.
 
-The existing web routes use the Go control plane first. Portainer remains only as a compatibility fallback during the migration.
+The web API uses Vessel's Go control plane, which communicates directly with Docker Engine through the local Unix socket. Vessel does not require a separate container-management service.
 
 ### API organization
 
