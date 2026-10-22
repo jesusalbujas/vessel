@@ -1,0 +1,24 @@
+services:
+  service-portal:
+    build: .
+    container_name: vessel
+    restart: unless-stopped
+    ports:
+      - "${VESSEL_PORT:-55300}:3000"
+    environment:
+      PUBLIC_SERVICE_HOST: ${PUBLIC_SERVICE_HOST:-}
+      VESSEL_CONTAINER_NAME: vessel
+      VESSEL_BACKEND_ADDR: 127.0.0.1:9100
+      VESSEL_BACKEND_URL: http://127.0.0.1:9100/api/v1
+      VESSEL_SECRET_KEY: ${VESSEL_SECRET_KEY:-replace-this-secret-before-exposing}
+      VESSEL_ADMIN_USERNAME: ${VESSEL_ADMIN_USERNAME:-admin}
+      VESSEL_ADMIN_PASSWORD: ${VESSEL_ADMIN_PASSWORD:-}
+      VESSEL_COMPOSE_ROOT: /app/data/compose-projects
+      VESSEL_COMPOSE_SOURCE_ROOT: /app/compose-host
+      VESSEL_COMPOSE_SOURCE_HOST_ROOT: ${VESSEL_COMPOSE_HOST_ROOT:-}
+      VESSEL_DATABASE_HOST: ${VESSEL_DATABASE_HOST:-}
+      VESSEL_DATABASE_PORT: ${VESSEL_DATABASE_PORT:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+      - ${VESSEL_COMPOSE_HOST_ROOT:-./data/compose-projects}:/app/compose-host:ro
