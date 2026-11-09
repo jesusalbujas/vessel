@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Activity, ArrowRight, Check, Clock3, LoaderCircle, RefreshCw, ShieldCheck, Settings2 } from "lucide-react";
 import { SettingsNavigation } from "@/app/components/SettingsNavigation";
 import { useI18n } from "@/lib/i18n";
+import { ContentLoadingSkeleton } from "@/app/components/LoadingSkeletons";
 import "../globals.css";
 
 type Settings = { refreshIntervalSeconds: number; sessionLifetimeHours: number; passwordMinLength: number; passwordRequireStrong: boolean };
@@ -19,7 +20,7 @@ export default function SettingsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/settings", { cache: "no-store", headers: { authorization: "Bearer " + (window.localStorage.getItem("vessel-token") ?? "") } })
+    fetch("/api/settings", { cache: "no-store" })
       .then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); setSettings(data.data); setCanManage(Boolean(data.canManage)); })
       .catch((cause) => setError(cause instanceof Error ? cause.message : es ? "No se pudo cargar la configuración." : "Could not load settings."));
   }, [es]);
@@ -28,7 +29,7 @@ export default function SettingsPage() {
     if (!settings) return;
     setSaving(true); setNotice(""); setError("");
     try {
-      const response = await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json", authorization: "Bearer " + (window.localStorage.getItem("vessel-token") ?? "") }, body: JSON.stringify({ refreshIntervalSeconds: settings.refreshIntervalSeconds }) });
+      const response = await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshIntervalSeconds: settings.refreshIntervalSeconds }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       setSettings(data.data); setNotice(es ? "Configuración general guardada." : "General settings saved.");
@@ -40,7 +41,7 @@ export default function SettingsPage() {
     <SettingsNavigation />
     {!canManage && !error ? <div className="settings-callout"><ShieldCheck size={18} />{es ? "Solo administradores pueden cambiar la configuración de Vessel." : "Only administrators can change Vessel settings."}</div> : null}
     {error ? <div className="settings-feedback is-error" role="alert">{error}</div> : null}
-    {!settings && !error ? <div className="settings-loading"><LoaderCircle size={18} className="spinning" />{es ? "Cargando…" : "Loading…"}</div> : null}
+    {!settings && !error ? <ContentLoadingSkeleton rows={3} label={es ? "Cargando configuración…" : "Loading settings…"} /> : null}
     {settings ? <>
       <section className="module-panel settings-panel"><div className="settings-panel-heading"><span className="settings-panel-icon"><Activity size={19} /></span><div><h2>{es ? "Actualización del entorno" : "Environment refresh"}</h2><p>{es ? "Controla cada cuánto Vessel vuelve a consultar contenedores y métricas del host." : "Choose how often Vessel refreshes containers and host metrics."}</p></div></div>
         <label className="settings-field"><span><strong>{es ? "Intervalo de actualización" : "Refresh interval"}</strong><small>{es ? "Aplica al inventario de contenedores y a las métricas del resumen. El progreso de operaciones conserva su frecuencia rápida." : "Applies to the container inventory and overview metrics. Operation progress keeps its faster polling interval."}</small></span><select value={settings.refreshIntervalSeconds} onChange={(event) => setSettings({ ...settings, refreshIntervalSeconds: Number(event.target.value) })} disabled={!canManage}><option value={5}>5 {es ? "segundos" : "seconds"}</option><option value={10}>10 {es ? "segundos" : "seconds"}</option><option value={15}>15 {es ? "segundos" : "seconds"}</option><option value={30}>30 {es ? "segundos" : "seconds"}</option><option value={60}>60 {es ? "segundos" : "seconds"}</option></select></label>

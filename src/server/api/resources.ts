@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { connectDockerContainer, createDockerVolume, deleteDockerImage, deleteDockerVolume, disconnectDockerContainer, getDockerComposeVersion, getDockerEngineInfo, inspectDockerContainer, isDockerConfigured, listDockerContainers, listDockerImages, listDockerNetworks, listDockerVolumes, pullDockerImage } from "@/lib/docker";
+import { inspectDockerContainer, listDockerContainers } from "@/lib/docker/containers";
+import { isDockerConfigured } from "@/lib/docker/client";
+import { getDockerComposeVersion, getDockerEngineInfo } from "@/lib/docker/engine";
+import { deleteDockerImage, listDockerImages, pullDockerImage } from "@/lib/docker/images";
+import { connectDockerContainer, disconnectDockerContainer, listDockerNetworks } from "@/lib/docker/networks";
+import { createDockerVolume, deleteDockerVolume, listDockerVolumes } from "@/lib/docker/volumes";
 import { startOperationJob } from "@/lib/jobs";
 import { authenticatedUser, mutationUser } from "@/lib/control-plane";
 

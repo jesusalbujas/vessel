@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
-import { cloneDockerContainer, connectDockerContainer, controlDockerContainer, createDockerContainer, deleteDockerContainer, disconnectDockerContainer, inspectDockerContainer, isDockerConfigured, listDockerContainers, listDockerNetworks, recreateDockerContainer, type DockerAction, type DockerContainer } from "@/lib/docker";
+import { cloneDockerContainer, controlDockerContainer, createDockerContainer, deleteDockerContainer, inspectDockerContainer, listDockerContainers, recreateDockerContainer } from "@/lib/docker/containers";
+import { isDockerConfigured } from "@/lib/docker/client";
+import { connectDockerContainer, disconnectDockerContainer, listDockerNetworks } from "@/lib/docker/networks";
+import type { DockerAction, DockerContainer } from "@/lib/docker/types";
 import { cloneDataResource, detectDataSource, updateDataResourceName, validDataResourceName } from "@/lib/data-copy";
 import { startCloneJob, startOperationJob } from "@/lib/jobs";
 import type { ContainerRuntimeSettings, RestartPolicy, ServiceCategory } from "@/lib/services";
-import { authenticatedUser, mutationUser } from "@/lib/control-plane";
+import { addVesselProjectService, authenticatedUser, maskVesselProjectEnvironmentReferences, mutationUser, resolveVesselProjectReferences, vesselProjectById, vesselProjectIdForResource } from "@/lib/control-plane";
 
 type RestartPolicyInput = { name?: string; maxRetries?: number };
 type RuntimeSettingsInput = Partial<ContainerRuntimeSettings>;
@@ -170,6 +173,12 @@ function dataResourceName(env: string[] | undefined): string | null {
   return null;
 }
 
+function projectEnvironment(values: string[] | undefined, projectId: string | null | undefined): string[] | undefined {
+  if (!values?.some((value) => /\$\{\{project\.[A-Za-z_][A-Za-z0-9_]*\}\}/.test(value))) return values;
+  if (!projectId || !vesselProjectById(projectId)) throw new Error("Project environment references require a project context");
+  return resolveVesselProjectReferences(projectId, values);
+}
+
 function imageVersion(image: string | null): string | null {
   if (!image) return null;
   if (image.startsWith("sha256:")) return image.slice(0, 19);
@@ -202,7 +211,8 @@ async function applySelectedNetwork(containerId: string | null, networkId: strin
 }
 
 export async function getServices(request: Request) {
-  if (!authenticatedUser(request)) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  const user = authenticatedUser(request);
+  if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
   if (!isDockerConfigured()) {
     return NextResponse.json({ data: [], meta: { source: "vessel", dockerSync: "not-configured", discovered: 0, host: process.env.PUBLIC_SERVICE_HOST ?? "" } }, { status: 503 });
   }
@@ -213,6 +223,9 @@ export async function getServices(request: Request) {
     const details = await Promise.all(containers.map((container) => inspectDockerContainer(container.Id).catch(() => null)));
     const services = containers.map((container, index) => {
       const name = (container.Names?.[0] ?? container.Id.slice(0, 12)).replace(/^\//, "");
+      const composeProject = container.Labels?.["com.docker.compose.project"] ?? null;
+      const linkedProjectId = vesselProjectIdForResource("container", name) ?? (composeProject ? vesselProjectIdForResource("compose", composeProject) : null);
+      const environmentVariables = details[index]?.Config?.Env ?? [];
       const port = publicPort(container);
       const status = statusFor(container);
       return {
@@ -233,10 +246,10 @@ export async function getServices(request: Request) {
         image: container.Image ?? null,
         imageVersion: imageVersion(container.Image ?? null),
         networks: Object.keys(details[index]?.NetworkSettings?.Networks ?? {}),
-        environmentVariables: details[index]?.Config?.Env ?? [],
+        ...(user.role === "viewer" ? {} : { environmentVariables: linkedProjectId ? maskVesselProjectEnvironmentReferences(linkedProjectId, environmentVariables) : environmentVariables }),
         restartPolicy: restartPolicyFor(details[index]),
-        runtimeSettings: details[index] ? runtimeSettingsFor(details[index]) : undefined,
-        composeProject: container.Labels?.["com.docker.compose.project"] ?? null,
+        ...(user.role === "viewer" ? {} : { runtimeSettings: details[index] ? runtimeSettingsFor(details[index]) : undefined }),
+        composeProject,
         composeService: container.Labels?.["com.docker.compose.service"] ?? null,
         createdAt: container.Created ?? null,
         ipAddresses: [...new Set(Object.values(details[index]?.NetworkSettings?.Networks ?? {}).flatMap((network) => [network.IPAddress, network.GlobalIPv6Address]).filter((address): address is string => Boolean(address)))],
@@ -244,21 +257,23 @@ export async function getServices(request: Request) {
         managedBy: container.Labels?.["com.docker.compose.project"] ? "Compose" : "Docker Engine",
       };
     });
-    return NextResponse.json({ data: services, meta: { source: "vessel", dockerSync: "ok", discovered: containers.length, host } });
+    return NextResponse.json({ data: services, meta: { source: "vessel", dockerSync: "ok", discovered: containers.length, host } }, { headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
   } catch {
-    return NextResponse.json({ data: [], meta: { source: "vessel", dockerSync: "error", discovered: 0, host: process.env.PUBLIC_SERVICE_HOST ?? "" } }, { status: 502 });
+    return NextResponse.json({ data: [], meta: { source: "vessel", dockerSync: "error", discovered: 0, host: process.env.PUBLIC_SERVICE_HOST ?? "" } }, { status: 502, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
   }
 }
 
 export async function postServices(request: Request) {
-  if (!mutationUser(request)) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  const user = mutationUser(request);
+  if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  if (user.role === "viewer") return NextResponse.json({ error: "This account cannot manage Docker services" }, { status: 403 });
   if (!isDockerConfigured()) {
     return NextResponse.json({ error: "El backend Docker no está configurado" }, { status: 503 });
   }
 
-  let body: { serviceId?: string; action?: DockerAction | "recreate" | "create" | "edit" | "duplicate" | "delete"; newName?: string; newPort?: number; newImage?: string; internalPort?: number; targetDataName?: string; copyData?: boolean; networkId?: string; environmentVariables?: string[]; restartPolicy?: RestartPolicyInput; runtimeSettings?: RuntimeSettingsInput };
+  let body: { serviceId?: string; action?: DockerAction | "recreate" | "create" | "edit" | "duplicate" | "delete"; newName?: string; newPort?: number; newImage?: string; internalPort?: number; targetDataName?: string; copyData?: boolean; networkId?: string; environmentVariables?: string[]; restartPolicy?: RestartPolicyInput; runtimeSettings?: RuntimeSettingsInput; projectId?: string; projectServiceKind?: "application" | "database" };
   try {
-    body = await request.json() as { serviceId?: string; action?: DockerAction | "recreate" | "create" | "edit" | "duplicate" | "delete"; newName?: string; newPort?: number; newImage?: string; internalPort?: number; targetDataName?: string; copyData?: boolean; networkId?: string; environmentVariables?: string[]; restartPolicy?: RestartPolicyInput; runtimeSettings?: RuntimeSettingsInput };
+    body = await request.json() as { serviceId?: string; action?: DockerAction | "recreate" | "create" | "edit" | "duplicate" | "delete"; newName?: string; newPort?: number; newImage?: string; internalPort?: number; targetDataName?: string; copyData?: boolean; networkId?: string; environmentVariables?: string[]; restartPolicy?: RestartPolicyInput; runtimeSettings?: RuntimeSettingsInput; projectId?: string; projectServiceKind?: "application" | "database" };
   } catch {
     return NextResponse.json({ error: "Solicitud inválida" }, { status: 400 });
   }
@@ -277,6 +292,10 @@ export async function postServices(request: Request) {
     const internalPort = Number(body.internalPort);
     if (!newName || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(newName)) return NextResponse.json({ error: "El nombre del servicio no es válido" }, { status: 400 });
     if (!image || /\s/.test(image) || image.length > 512) return NextResponse.json({ error: "La imagen Docker no es válida" }, { status: 400 });
+    if (body.projectId && (!vesselProjectById(body.projectId) || !["application", "database"].includes(body.projectServiceKind ?? ""))) return NextResponse.json({ error: "El proyecto o tipo de servicio no es válido" }, { status: 400 });
+      let environmentVariables: string[] | undefined;
+      try { environmentVariables = projectEnvironment(body.environmentVariables, body.projectId); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Project environment references are invalid" }, { status: 400 }); }
     if (!Number.isInteger(publicPort) || publicPort < 1 || publicPort > 65535 || !Number.isInteger(internalPort) || internalPort < 1 || internalPort > 65535) return NextResponse.json({ error: "Los puertos deben estar entre 1 y 65535" }, { status: 400 });
     try {
       const containers = await listDockerContainers();
@@ -285,7 +304,9 @@ export async function postServices(request: Request) {
       if (body.networkId && !(await listDockerNetworks()).some((network) => network.Id === body.networkId)) return NextResponse.json({ error: "La red Docker seleccionada no existe" }, { status: 400 });
       const job = startOperationJob("image", async (update) => {
         update({ step: "pulling_image", message: "Preparando descarga de imagen", percent: 1 });
-        await createDockerContainer(newName, image, internalPort, publicPort, (percent, message) => update({ step: "pulling_image", message, percent }), body.environmentVariables, parseRestartPolicy(body.restartPolicy) ?? { name: "no" }, runtimeSettings, body.networkId);
+        const containerId = await createDockerContainer(newName, image, internalPort, publicPort, (percent, message) => update({ step: "pulling_image", message, percent }), environmentVariables, parseRestartPolicy(body.restartPolicy) ?? { name: "no" }, runtimeSettings, body.networkId);
+        if (!containerId) throw new Error("Docker no devolvió el contenedor creado");
+        if (body.projectId && body.projectServiceKind) addVesselProjectService({ projectId: body.projectId, kind: body.projectServiceKind, name: newName, targetType: "container", targetRef: newName });
         update({ step: "starting", message: "Servicio creado y verificado", percent: 100 });
         return { name: newName, port: publicPort, dataResource: "", dataCopied: false };
       });
@@ -331,12 +352,16 @@ export async function postServices(request: Request) {
       if (usedPort) return NextResponse.json({ error: "El puerto ya está ocupado" }, { status: 409 });
       const oldPort = target.Ports?.find((port) => port.PublicPort)?.PublicPort ?? null;
       const targetDetails = await inspectDockerContainer(target.Id);
+      const targetName = (target.Names?.[0] ?? target.Id).replace(/^\//, "");
+      let environmentVariables: string[] | undefined;
+      try { environmentVariables = projectEnvironment(body.environmentVariables, body.projectId ?? vesselProjectIdForResource("container", targetName)); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Project environment references are invalid" }, { status: 400 }); }
       const restartPolicy = parseRestartPolicy(body.restartPolicy);
       const previousNetworkNames = Object.keys(targetDetails.NetworkSettings?.Networks ?? {});
       if (newImage !== target.Image) {
         const createImageJob = () => startOperationJob("image", async (update) => {
           update({ step: "pulling_image", message: "Preparando descarga de imagen", percent: 1 });
-          const recreatedId = await recreateDockerContainer(target.Id, newName, oldPort, newPort, newImage, (percent, message) => update({ step: "pulling_image", message, percent }), body.environmentVariables, restartPolicy, runtimeSettings);
+          const recreatedId = await recreateDockerContainer(target.Id, newName, oldPort, newPort, newImage, (percent, message) => update({ step: "pulling_image", message, percent }), environmentVariables, restartPolicy, runtimeSettings);
           await applySelectedNetwork(recreatedId, body.networkId, previousNetworkNames);
           update({ step: "starting", message: "Imagen aplicada y servicio verificado", percent: 100 });
           return { name: newName, port: newPort, dataResource: "", dataCopied: false };
@@ -344,7 +369,7 @@ export async function postServices(request: Request) {
         const job = createImageJob();
         return NextResponse.json({ ok: true, action: "edit", jobId: job.id, name: newName, port: newPort, image: newImage }, { status: 202 });
       }
-      const recreatedId = await recreateDockerContainer(target.Id, newName, oldPort, newPort, newImage, undefined, body.environmentVariables, restartPolicy, runtimeSettings);
+      const recreatedId = await recreateDockerContainer(target.Id, newName, oldPort, newPort, newImage, undefined, environmentVariables, restartPolicy, runtimeSettings);
       await applySelectedNetwork(recreatedId, body.networkId, previousNetworkNames);
       return NextResponse.json({ ok: true, action: "edit", name: newName, port: newPort, image: newImage });
     }
@@ -354,6 +379,10 @@ export async function postServices(request: Request) {
       const copyData = body.copyData !== false;
       const newImage = body.newImage?.trim();
       const sourceDetails = await inspectDockerContainer(target.Id);
+      const sourceName = (target.Names?.[0] ?? target.Id).replace(/^\//, "");
+      let environmentVariables: string[] | undefined;
+      try { environmentVariables = projectEnvironment(body.environmentVariables, body.projectId ?? vesselProjectIdForResource("container", sourceName)); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Project environment references are invalid" }, { status: 400 }); }
       const restartPolicy = parseRestartPolicy(body.restartPolicy);
       const sourceEnv = sourceDetails.Config?.Env ?? [];
       const dataSource = detectDataSource(sourceEnv);
@@ -374,7 +403,7 @@ export async function postServices(request: Request) {
       const job = startCloneJob(async (update) => {
         const copied = copyData ? await cloneDataResource(sourceEnv, targetDataName!, (patch) => update({ ...patch, currentItem: patch.currentItem ?? null })) : null;
         update({ step: "creating_container", message: "Creando el contenedor duplicado", percent: 94, currentItem: null, errors: copied?.errors ?? 0 });
-        const newEnvironment = copyData ? updateDataResourceName(dataSource!, sourceEnv, body.environmentVariables, targetDataName!) : body.environmentVariables;
+        const newEnvironment = copyData ? updateDataResourceName(dataSource!, sourceEnv, environmentVariables, targetDataName!) : environmentVariables;
         const cloned = await cloneDockerContainer(target.Id, newName, newPort, newImage, (percent, message) => update({ step: "pulling_image", message, percent }), newEnvironment, restartPolicy, runtimeSettings);
         await applySelectedNetwork(cloned.containerId, body.networkId, Object.keys(sourceDetails.NetworkSettings?.Networks ?? {}));
         update({ step: "starting", message: "Verificando el nuevo servicio", percent: 98 });

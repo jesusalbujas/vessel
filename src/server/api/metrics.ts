@@ -1,6 +1,58 @@
 import { readFile, statfs } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { authenticatedUser } from "@/lib/control-plane";
+import { dockerGet } from "@/lib/docker/client";
+
+type DockerSystemDisk = {
+  LayersSize?: number;
+  Images?: Array<{ Size?: number }>;
+  Containers?: Array<{ SizeRw?: number }>;
+  Volumes?: Array<{ UsageData?: { Size?: number } }>;
+  BuildCache?: Array<{ Size?: number }>;
+};
+type DockerContainer = { Id: string };
+type DockerContainerStats = {
+  blkio_stats?: { io_service_bytes_recursive?: Array<{ op?: string; value?: number }> | null };
+  networks?: Record<string, { rx_bytes?: number; tx_bytes?: number }>;
+};
+
+const sumBytes = (values: Array<number | undefined>) => values.reduce<number>((sum, value) => sum + (Number.isFinite(value) && value! > 0 ? value! : 0), 0);
+
+async function dockerStorageUsage() {
+  const disk = await dockerGet<DockerSystemDisk>("system/df");
+  // LayersSize is Docker's deduplicated total; summing image Size would count shared layers repeatedly.
+  const images = Number.isFinite(disk.LayersSize) && disk.LayersSize! >= 0 ? disk.LayersSize! : sumBytes((disk.Images ?? []).map((item) => item.Size));
+  const containers = sumBytes((disk.Containers ?? []).map((item) => item.SizeRw));
+  const volumes = sumBytes((disk.Volumes ?? []).map((item) => item.UsageData?.Size));
+  const buildCache = sumBytes((disk.BuildCache ?? []).map((item) => item.Size));
+  return { images, containers, volumes, buildCache, total: images + containers + volumes + buildCache };
+}
+
+async function dockerIoUsage() {
+  const containers = await dockerGet<DockerContainer[]>("containers/json?all=0");
+  let blockRead = 0;
+  let blockWrite = 0;
+  let networkIn = 0;
+  let networkOut = 0;
+  const batchSize = 12;
+  for (let offset = 0; offset < containers.length; offset += batchSize) {
+    const batch = containers.slice(offset, offset + batchSize);
+    const stats = await Promise.allSettled(batch.map(({ Id }) => dockerGet<DockerContainerStats>(`containers/${encodeURIComponent(Id)}/stats?stream=false`)));
+    for (const result of stats) {
+      if (result.status !== "fulfilled") continue;
+      const stats = result.value;
+      for (const io of stats.blkio_stats?.io_service_bytes_recursive ?? []) {
+        if (io.op?.toLowerCase() === "read") blockRead += io.value ?? 0;
+        if (io.op?.toLowerCase() === "write") blockWrite += io.value ?? 0;
+      }
+      for (const network of Object.values(stats.networks ?? {})) {
+        networkIn += network.rx_bytes ?? 0;
+        networkOut += network.tx_bytes ?? 0;
+      }
+    }
+  }
+  return { blockRead, blockWrite, networkIn, networkOut, containers: containers.length };
+}
 
 function cpuTotals(text: string) {
   const values = text.split("\n")[0].trim().split(/\s+/).slice(1).map(Number);
@@ -17,10 +69,12 @@ export async function getMetrics(request: Request) {
   try {
     const first = cpuTotals(await readFile("/proc/stat", "utf8"));
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const [stat, memoryText, disk] = await Promise.all([
+    const [stat, memoryText, disk, dockerDisk, io] = await Promise.all([
       readFile("/proc/stat", "utf8"),
       readFile("/proc/meminfo", "utf8"),
       statfs(process.env.VESSEL_METRICS_PATH ?? "/app/data").catch(() => statfs(process.cwd())),
+      dockerStorageUsage().catch(() => null),
+      dockerIoUsage().catch(() => null),
     ]);
     const second = cpuTotals(stat);
     const totalTicks = second.total - first.total;
@@ -33,6 +87,8 @@ export async function getMetrics(request: Request) {
       cpu: { percent: cpuPercent },
       memory: { used: Math.max(0, memoryTotal - memoryAvailable), total: memoryTotal },
       disk: { used: diskUsed, total: diskTotal, source: "vessel-data-filesystem" },
+      dockerDisk,
+      io,
       sampledAt: new Date().toISOString(),
     });
   } catch {

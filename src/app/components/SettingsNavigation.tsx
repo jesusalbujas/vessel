@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FileText, Settings2, ShieldCheck } from "lucide-react";
+import { FileText, Settings2, ShieldCheck, Sparkles } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 
@@ -10,6 +10,7 @@ export function SettingsNavigation() {
   const { language } = useI18n();
   const links = [
     { href: "/settings", icon: Settings2, en: "General", es: "General" },
+    { href: "/settings/ai", icon: Sparkles, en: "AI", es: "IA" },
     { href: "/settings/authentication", icon: ShieldCheck, en: "Authentication", es: "Autenticación" },
     { href: "/terms", icon: FileText, en: "Terms & conditions", es: "Términos y condiciones" },
   ];

@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { createRegistry, currentUser, deleteRegistry, listRegistries, registryCredentialsById } from "@/lib/control-plane";
-import { isDockerConfigured, testDockerRegistryCredentials } from "@/lib/docker";
+import { createRegistry, currentUser, deleteRegistry, listRegistries, registryCredentialsById, requestTokenFromRequest } from "@/lib/control-plane";
+import { isDockerConfigured } from "@/lib/docker/client";
+import { testDockerRegistryCredentials } from "@/lib/docker/registry-auth";
 import { prepareRegistry } from "@/lib/registries";
 
 function auth(request: Request) {
-  return currentUser(request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null);
+  return currentUser(requestTokenFromRequest(request));
 }
 
 export async function getRegistries(request: Request) {

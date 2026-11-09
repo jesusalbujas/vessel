@@ -4,16 +4,22 @@ services:
     container_name: vessel
     restart: unless-stopped
     ports:
-      - "${VESSEL_PORT:-55300}:3000"
+      - "${VESSEL_BIND_ADDRESS:-127.0.0.1}:${VESSEL_PORT:-55300}:3000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       PUBLIC_SERVICE_HOST: ${PUBLIC_SERVICE_HOST:-}
       VESSEL_CONTAINER_NAME: vessel
       VESSEL_BACKEND_ADDR: 127.0.0.1:9100
       VESSEL_BACKEND_URL: http://127.0.0.1:9100/api/v1
-      VESSEL_SECRET_KEY: ${VESSEL_SECRET_KEY:-replace-this-secret-before-exposing}
+      VESSEL_PUBLIC_URL: ${VESSEL_PUBLIC_URL:-}
+      VESSEL_SECRET_KEY: ${VESSEL_SECRET_KEY:?Set a private random VESSEL_SECRET_KEY in .env (at least 32 characters)}
       VESSEL_ADMIN_USERNAME: ${VESSEL_ADMIN_USERNAME:-admin}
       VESSEL_ADMIN_PASSWORD: ${VESSEL_ADMIN_PASSWORD:-}
       VESSEL_COMPOSE_ROOT: /app/data/compose-projects
+      VESSEL_GIT_ROOT: ${VESSEL_GIT_ROOT:-/opt/vessel-data/git-sources}
       VESSEL_COMPOSE_SOURCE_ROOT: /app/compose-host
       VESSEL_COMPOSE_SOURCE_HOST_ROOT: ${VESSEL_COMPOSE_HOST_ROOT:-}
       VESSEL_DATABASE_HOST: ${VESSEL_DATABASE_HOST:-}
@@ -21,4 +27,5 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/app/data
+      - "${VESSEL_GIT_ROOT:-/opt/vessel-data/git-sources}:${VESSEL_GIT_ROOT:-/opt/vessel-data/git-sources}"
       - ${VESSEL_COMPOSE_HOST_ROOT:-./data/compose-projects}:/app/compose-host:ro

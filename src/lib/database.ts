@@ -30,6 +30,17 @@ async function runPostgres(command: string, args: string[], connection: DataSour
 
 export async function clonePostgresData(source: DataSource, targetName: string, onProgress?: (patch: DataCopyProgress) => void): Promise<{ sourceName: string; errors: number }> {
   const baseArgs = ["-h", source.host, "-p", String(source.port), "-U", source.user];
+  const versionResult = await runPostgres("psql", [...baseArgs, "-d", "postgres", "-tAc", "SHOW server_version_num"], source);
+  const serverVersion = Number(versionResult.stdout.trim());
+  if (!Number.isInteger(serverVersion) || serverVersion < 10000) {
+    throw new Error("No se pudo identificar la versión del servidor PostgreSQL");
+  }
+  const serverMajor = Math.floor(serverVersion / 10000);
+  if (serverMajor > 16) {
+    throw new Error(`PostgreSQL ${serverMajor} requiere un cliente pg_dump de la misma versión mayor. Vessel incluye clientes 13 y 16`);
+  }
+  const clientSuffix = serverMajor === 13 ? "13" : "";
+  const clientCommand = (command: "pg_dump" | "pg_restore") => `${command}${clientSuffix}`;
   const targetExists = await runPostgres("psql", [...baseArgs, "-d", "postgres", "-tAc", `SELECT 1 FROM pg_database WHERE datname = '${targetName.replaceAll("'", "''")}'`], source);
   if (targetExists.stdout.trim() === "1") throw new Error(`El recurso de datos ${targetName} ya existe`);
   const workDir = await mkdtemp(`${tmpdir()}/vessel-data-copy-`);
@@ -37,11 +48,11 @@ export async function clonePostgresData(source: DataSource, targetName: string, 
   let errors = 0;
   try {
     onProgress?.({ step: "dumping", message: `Generando copia desde ${source.resourceName}`, percent: 10 });
-    await runPostgres("pg_dump", [...baseArgs, "-d", source.resourceName, "--format=custom", "--no-owner", "--no-privileges", "--file", dumpFile], source);
+    await runPostgres(clientCommand("pg_dump"), [...baseArgs, "-d", source.resourceName, "--format=custom", "--no-owner", "--no-privileges", "--file", dumpFile], source);
     onProgress?.({ step: "creating_resource", message: `Preparando el recurso ${targetName}`, percent: 34 });
     await runPostgres("psql", [...baseArgs, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", `CREATE DATABASE ${quoteIdentifier(targetName)} OWNER ${quoteIdentifier(source.user)}`], source);
     onProgress?.({ step: "restoring", message: "Copiando estructura y registros", percent: 42, currentItem: null, errors });
-    await runPostgres("pg_restore", [...baseArgs, "-d", targetName, "--no-owner", "--no-privileges", "--verbose", dumpFile], source, (line) => {
+    await runPostgres(clientCommand("pg_restore"), [...baseArgs, "-d", targetName, "--no-owner", "--no-privileges", "--verbose", dumpFile], source, (line) => {
       const currentItem = line.match(/processing data for table ["']?([^"']+)["']?/i)?.[1];
       if (currentItem) onProgress?.({ step: "restoring", message: `Copiando ${currentItem}`, percent: 55, currentItem, errors });
       if (/pg_restore:\s*error:/i.test(line)) {

@@ -1,17 +1,17 @@
 {
   "name": "vessel",
-  "version": "0.1.0",
+  "version": "0.30.10",
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "node .next/standalone/server.js",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "lucide-react": "^1.61.0",
-    "next": "16.4.0",
+    "next": "^16.4.5",
     "react": "19.1.1",
     "react-dom": "19.1.1"
   },

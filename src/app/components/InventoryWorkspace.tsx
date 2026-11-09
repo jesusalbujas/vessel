@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, LayoutGrid, List, MoreHorizontal, SlidersHorizontal } from "lucide-react";
 import type { ContainerRuntimeSettings, RestartPolicy, Service, ServiceCategory, ServiceStatus } from "@/lib/services";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
+import { notifyVessel } from "./ToastNotice";
+import { ResourceListLoadingSkeleton } from "./LoadingSkeletons";
 import RuntimeSettingsEditor from "./RuntimeSettingsEditor";
 
 const initialCatalog: Service[] = [];
@@ -22,7 +24,15 @@ function statusLabel(status: ServiceStatus, t: (key: TranslationKey) => string):
 
 function localizedStatusSince(value: string | null, language: "es" | "en"): string {
   if (!value || language === "es") return value ?? "";
-  return value.replace(/^Activo desde hace /, "Running for ").replace(/^Detenido desde hace /, "Stopped for ").replace(/^Activo$/, "Running").replace(/^Detenido$/, "Stopped").replace(/^Creado, aún no iniciado$/, "Created, not started yet").replace(/^aproximadamente /, "about ").replace(/^menos de /, "less than ").replace(/un segundo$/, "one second").replace(/un minuto$/, "one minute").replace(/una hora$/, "one hour").replace(/un día$/, "one day").replace(/segundos?$/, "seconds").replace(/minutos?$/, "minutes").replace(/horas?$/, "hours").replace(/días?$/, "days");
+  return value.replace(/^Activo desde hace /, "Running for ").replace(/^Detenido desde hace /, "Stopped for ").replace(/^Activo$/, "Running").replace(/^Detenido$/, "Stopped").replace(/^Creado, aún no iniciado$/, "Created, not started yet").replace(/aproximadamente /, "about ").replace(/menos de /, "less than ").replace(/un segundo$/, "one second").replace(/un minuto$/, "one minute").replace(/una hora$/, "one hour").replace(/un día$/, "one day").replace(/una semana$/, "one week").replace(/un mes$/, "one month").replace(/un año$/, "one year").replace(/segundos?$/, "seconds").replace(/minutos?$/, "minutes").replace(/horas?$/, "hours").replace(/días?$/, "days").replace(/semanas?$/, "weeks").replace(/meses?$/, "months").replace(/años?$/, "years");
+}
+
+function localizeServiceActionError(message: string, language: "es" | "en"): string {
+  if (language !== "es") return message;
+  if (message === "This account cannot manage Docker services") return "Esta cuenta no tiene permiso para administrar servicios Docker.";
+  if (message === "Project environment references require a project context") return "Las referencias del entorno requieren un proyecto asociado.";
+  const missing = message.match(/^Project environment variable ([A-Za-z_][A-Za-z0-9_]*) is not configured$/);
+  return missing ? `La variable ${missing[1]} no está configurada en el entorno del proyecto.` : message;
 }
 
 type ImageResource = { Id: string; RepoTags?: string[] | null; RepoDigests?: string[] | null; Created?: number; Size?: number; used?: boolean };
@@ -34,7 +44,9 @@ type EngineInfo = { Name?: string; ServerVersion?: string; OperatingSystem?: str
 type ContainerColumn = "compose" | "image" | "created" | "ip" | "ports" | "database" | "managedBy";
 type CloneJob = { id: string; kind: "duplicate" | "image"; status: "running" | "completed" | "failed"; step: string; message: string; percent: number; currentItem: string | null; errors: number; startedAt: string; finishedAt: string | null; sharedDataSource?: boolean; result?: { name: string; port: number; dataResource: string; dataCopied: boolean } };
 
-function Icon({ name, size = 17 }: { name: "box" | "docker" | "vessel" | "sun" | "moon" | "plus" | "play" | "stop" | "pause" | "kill" | "refresh" | "external" | "loader" | "check" | "alert" | "copy" | "image" | "database" | "layers" | "port" | "tag" | "terminal" | "pencil" | "chevron" | "x"; size?: number }) {
+type IconName = "box" | "docker" | "vessel" | "sun" | "moon" | "plus" | "play" | "stop" | "pause" | "kill" | "refresh" | "external" | "loader" | "check" | "alert" | "trash" | "copy" | "image" | "database" | "layers" | "port" | "tag" | "terminal" | "pencil" | "chevron" | "x";
+
+function Icon({ name, size = 17 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   const paths = {
     box: <><path d="m21 8-9 5-9-5 9-5 9 5Z" /><path d="M3 8v8l9 5 9-5V8" /><path d="M12 13v8" /></>,
@@ -52,6 +64,7 @@ function Icon({ name, size = 17 }: { name: "box" | "docker" | "vessel" | "sun" |
     loader: <><path d="M12 3v3" /><path d="M12 18v3" /><path d="m3 12 3 0" /><path d="m18 12 3 0" /><path d="m5.6 5.6 2.1 2.1" /><path d="m16.3 16.3 2.1 2.1" /><path d="m5.6 18.4 2.1-2.1" /><path d="m16.3 7.7 2.1-2.1" /></>,
     check: <><circle cx="12" cy="12" r="9" /><path d="m8 12 2.5 2.5L16 9" /></>,
     alert: <><path d="M10.3 3.4 2.1 18a2 2 0 0 0 1.7 3h16.4a2 2 0 0 0 1.7-3L13.7 3.4a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4" /><path d="M12 17h.01" /></>,
+    trash: <><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m19 6-1 14H6L5 6" /><path d="M10 11v5M14 11v5" /></>,
     copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>,
     image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m21 15-5-5L5 20" /></>,
     database: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" /></>,
@@ -66,10 +79,10 @@ function Icon({ name, size = 17 }: { name: "box" | "docker" | "vessel" | "sun" |
   return <svg {...common} className={name === "loader" ? "icon-loader" : undefined}>{paths[name]}</svg>;
 }
 
-type FilterOption = { value: string; label: string };
+type FilterOption = { value: string; label: string; icon?: IconName };
 type ContainerSortColumn = "name" | "status" | "compose" | "image" | "port" | "database" | "created" | "ip" | "ports" | "managedBy";
 
-function CustomSelect({ label, value, options, onChange, icon }: { label: string; value: string; options: FilterOption[]; onChange: (value: string) => void; icon?: "box" | "database" | "layers" | "image" | "port" | "tag" | "terminal" | "refresh" }) {
+function CustomSelect({ label, value, options, onChange, icon }: { label: string; value: string; options: FilterOption[]; onChange: (value: string) => void; icon?: IconName }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const selected = options.find((option) => option.value === value) ?? options[0];
@@ -83,11 +96,11 @@ function CustomSelect({ label, value, options, onChange, icon }: { label: string
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
 
-  return <div className="custom-select-field"><span>{icon ? <Icon name={icon} size={14} /> : null}{label}</span><div className={`custom-select${open ? " is-open" : ""}`} ref={containerRef}><button type="button" className="custom-select-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); } }}><span>{selected?.label}</span><Icon name="chevron" size={15} /></button>{open ? <div className="custom-select-menu" role="listbox" aria-label={label}>{options.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={`custom-select-option${option.value === value ? " selected" : ""}`} key={option.value} onClick={() => { onChange(option.value); setOpen(false); }}>{option.label}{option.value === value ? <Icon name="check" size={14} /> : null}</button>)}</div> : null}</div></div>;
+  return <div className="custom-select-field"><span>{icon ? <Icon name={icon} size={14} /> : null}{label}</span><div className={`custom-select${open ? " is-open" : ""}`} ref={containerRef}><button type="button" className="custom-select-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); } }}><span className="custom-select-selected"><span className="custom-select-option-copy">{selected?.icon ? <Icon name={selected.icon} size={15} /> : null}<span>{selected?.label}</span></span></span><Icon name="chevron" size={15} /></button>{open ? <div className="custom-select-menu" role="listbox" aria-label={label}>{options.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={`custom-select-option${option.value === value ? " selected" : ""}`} key={option.value} onClick={() => { onChange(option.value); setOpen(false); }}><span className="custom-select-option-copy">{option.icon ? <Icon name={option.icon} size={15} /> : null}<span>{option.label}</span></span>{option.value === value ? <Icon name="check" size={14} /> : null}</button>)}</div> : null}</div></div>;
 }
 
 function EnvironmentVariablesEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [mode, setMode] = useState<"fields" | "text">("fields");
   const parseRows = (raw: string) => raw.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith("#")).map((line) => {
     const separator = line.indexOf("=");
@@ -96,15 +109,29 @@ function EnvironmentVariablesEditor({ value, onChange }: { value: string; onChan
   const [rows, setRows] = useState<Array<{ key: string; value: string }>>(() => parseRows(value));
   useEffect(() => setRows(parseRows(value)), [value]);
   const updateRows = (nextRows: Array<{ key: string; value: string }>) => { setRows(nextRows); onChange(nextRows.filter((row) => row.key.trim()).map((row) => `${row.key.trim()}=${row.value}`).join("\n")); };
-  return <div className="environment-editor"><div className="variables-heading"><div><strong><Icon name="terminal" size={15} />{t("environment_variables")}</strong><span>{t("optional_key_value")}</span></div><div className="variables-mode"><button type="button" className={mode === "fields" ? "active" : ""} onClick={() => setMode("fields")}>{t("fields")}</button><button type="button" className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}>{t("paste_text")}</button></div></div>{mode === "text" ? <textarea className="variables-textarea" value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} placeholder="DB_NAME=my_database\nDB_HOST=postgres\nDB_PORT=5432" rows={8} /> : rows.length ? <div className="variable-list">{rows.map((row, index) => <div className="variable-row" key={`${index}-${row.key}`}><input aria-label={`Key ${index + 1}`} value={row.key} onChange={(event) => { const next = [...rows]; next[index] = { ...next[index], key: event.target.value }; updateRows(next); }} placeholder="KEY" /><span>=</span><input aria-label={`Value ${index + 1}`} value={row.value} onChange={(event) => { const next = [...rows]; next[index] = { ...next[index], value: event.target.value }; updateRows(next); }} placeholder="value" /><button type="button" className="variable-remove" onClick={() => updateRows(rows.filter((_, rowIndex) => rowIndex !== index))} aria-label={`Remove variable ${index + 1}`}>×</button></div>)}</div> : <div className="variables-empty"><Icon name="terminal" size={18} />{t("no_variables")}<button type="button" onClick={() => updateRows([...rows, { key: "", value: "" }])}>{t("add_first_variable")}</button></div>}{mode === "fields" ? <button type="button" className="small-add-button variable-add" onClick={() => updateRows([...rows, { key: "", value: "" }])}><Icon name="plus" size={14} />{t("add_variable")}</button> : null}</div>;
+  return <div className="environment-editor"><div className="variables-heading"><div><strong><Icon name="terminal" size={15} />{t("environment_variables")}</strong><span>{t("optional_key_value")}</span></div><div className="variables-mode"><button type="button" className={mode === "fields" ? "active" : ""} onClick={() => setMode("fields")}>{t("fields")}</button><button type="button" className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}>{t("paste_text")}</button></div></div>{mode === "text" ? <textarea className="variables-textarea" value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} placeholder="DB_NAME=my_database\nDB_HOST=postgres\nDB_PORT=5432" rows={8} /> : rows.length ? <div className="variable-list">{rows.map((row, index) => <div className="variable-row" key={`${index}-${row.key}`}><input aria-label={`Key ${index + 1}`} value={row.key} onChange={(event) => { const next = [...rows]; next[index] = { ...next[index], key: event.target.value }; updateRows(next); }} placeholder="KEY" /><span>=</span><input aria-label={`Value ${index + 1}`} value={row.value} onChange={(event) => { const next = [...rows]; next[index] = { ...next[index], value: event.target.value }; updateRows(next); }} placeholder="value" /><button type="button" className="variable-remove" onClick={() => updateRows(rows.filter((_, rowIndex) => rowIndex !== index))} aria-label={`Remove variable ${index + 1}`}>×</button></div>)}</div> : <div className="variables-empty"><Icon name="terminal" size={18} />{t("no_variables")}<button type="button" onClick={() => updateRows([...rows, { key: "", value: "" }])}>{t("add_first_variable")}</button></div>}{mode === "fields" ? <button type="button" className="small-add-button variable-add" onClick={() => updateRows([...rows, { key: "", value: "" }])}><Icon name="plus" size={14} />{t("add_variable")}</button> : null}<p className="project-variable-reference-hint">{language === "es" ? "En un proyecto, referencia una variable compartida así:" : "In a project, reference a shared variable like this:"} <code>{'${{project.DATABASE_URL}}'}</code></p></div>;
 }
 
-function environmentLabel(value: Service["environment"]): string {
-  return { latest: "Latest", test: "Prueba", candidate: "Candidato", full: "Full" }[value];
+function environmentLabel(value: Service["environment"], t: (key: TranslationKey) => string): string {
+  return { latest: "Latest", test: t("test"), candidate: t("candidate"), full: t("full") }[value];
 }
 
 const categoryIcon: Record<ServiceCategory, "box" | "database" | "layers"> = { application: "box", database: "database", external: "box" };
-const restartPolicyOptions: FilterOption[] = [{ value: "no", label: "no" }, { value: "always", label: "always" }, { value: "unless-stopped", label: "unless-stopped" }, { value: "on-failure", label: "on-failure" }];
+function restartPolicyOptions(language: "es" | "en"): FilterOption[] {
+  return language === "es"
+    ? [
+      { value: "no", label: "No reiniciar", icon: "stop" },
+      { value: "always", label: "Siempre", icon: "refresh" },
+      { value: "unless-stopped", label: "Siempre, salvo detención manual", icon: "pause" },
+      { value: "on-failure", label: "Al producirse un fallo", icon: "alert" },
+    ]
+    : [
+      { value: "no", label: "no", icon: "stop" },
+      { value: "always", label: "always", icon: "refresh" },
+      { value: "unless-stopped", label: "unless-stopped", icon: "pause" },
+      { value: "on-failure", label: "on-failure", icon: "alert" },
+    ];
+}
 const formatBytes = (value?: number) => value === undefined ? "—" : value < 1024 * 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MB` : `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
 const formatDateTime = (value: number | string | undefined, language: "es" | "en") => value ? new Intl.DateTimeFormat(language === "es" ? "es-VE" : "en-US", { dateStyle: "medium", timeStyle: "short" }).format(typeof value === "number" ? new Date(value * 1000) : new Date(value)) : "—";
 
@@ -164,10 +191,13 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   const dragOffset = useRef({ x: 0, y: 0 });
   const dismissedJobs = useRef<Set<string>>(new Set());
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ kind: "success" | "error" | "info"; message: string } | null>(null);
+  function setToast(next: { kind: "success" | "error" | "info"; message: string } | null) {
+    if (next) notifyVessel({ kind: next.kind, title: next.message });
+  }
   const [confirmation, setConfirmation] = useState<{ service: Service; action: "start" | "stop" | "restart" | "kill" | "pause" | "unpause" | "recreate" } | null>(null);
   const [deleteService, setDeleteService] = useState<Service | null>(null);
   const [editService, setEditService] = useState<Service | null>(null);
+  const [composeEditChoice, setComposeEditChoice] = useState<Service | null>(null);
   const [editName, setEditName] = useState("");
   const [editPort, setEditPort] = useState("");
   const [editImage, setEditImage] = useState("");
@@ -194,6 +224,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   const [cloneJob, setCloneJob] = useState<CloneJob | null>(null);
   const [cloneJobMinimized, setCloneJobMinimized] = useState(false);
   const [newServiceOpen, setNewServiceOpen] = useState(false);
+  const [newServiceContext, setNewServiceContext] = useState<{ projectId: string; kind: "application" | "database" } | null>(null);
   const [newServiceName, setNewServiceName] = useState("");
   const [newServiceImage, setNewServiceImage] = useState("");
   const [newServiceInternalPort, setNewServiceInternalPort] = useState("8080");
@@ -227,6 +258,35 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     }
   }, []);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("create") !== "service") return;
+    const projectId = params.get("projectId") ?? "";
+    const kind = params.get("kind");
+    if (projectId && (kind === "application" || kind === "database")) {
+      openCreateService({ projectId, kind });
+      const presetId = params.get("database");
+      const presets: Record<string, { image: string; port: number; variables: (password: string) => string }> = {
+        postgres: { image: "postgres:latest", port: 5432, variables: (password) => `POSTGRES_USER=vessel\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=vessel` },
+        mysql: { image: "mysql:latest", port: 3306, variables: (password) => `MYSQL_ROOT_PASSWORD=${password}\nMYSQL_DATABASE=vessel\nMYSQL_USER=vessel\nMYSQL_PASSWORD=${password}` },
+        mariadb: { image: "mariadb:latest", port: 3306, variables: (password) => `MARIADB_ROOT_PASSWORD=${password}\nMARIADB_DATABASE=vessel\nMARIADB_USER=vessel\nMARIADB_PASSWORD=${password}` },
+        mongodb: { image: "mongo:latest", port: 27017, variables: (password) => `MONGO_INITDB_ROOT_USERNAME=vessel\nMONGO_INITDB_ROOT_PASSWORD=${password}` },
+      };
+      const preset = presetId ? presets[presetId] : undefined;
+      if (kind === "database" && preset) {
+        const bytes = window.crypto.getRandomValues(new Uint8Array(24));
+        const password = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        setNewServiceName(params.get("newName") ?? `database-${presetId}`);
+        setNewServiceImage(preset.image);
+        setNewServiceInternalPort(String(preset.port));
+        setNewServiceVariables(preset.variables(password));
+        setNewServiceTab("variables");
+      }
+      params.delete("create");
+      window.history.replaceState({}, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
+    }
+  }, []);
+
   function changeContainerLayout(layout: "cards" | "table") {
     setContainerLayout(layout);
     window.localStorage.setItem("vessel-container-layout", layout);
@@ -240,12 +300,6 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       return next;
     });
   }
-
-  useEffect(() => {
-    if (!toast) return;
-    const timeout = window.setTimeout(() => setToast(null), toast.kind === "info" ? 5000 : 3500);
-    return () => window.clearTimeout(timeout);
-  }, [toast]);
 
   async function copyImage(image: string | null) {
     if (!image) return;
@@ -398,8 +452,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
 
   useEffect(() => {
     if (view !== "images") return;
-    const token = window.localStorage.getItem("vessel-token") ?? "";
-    fetch("/api/registries", { headers: { authorization: `Bearer ${token}` }, cache: "no-store" }).then(async (response) => {
+    fetch("/api/registries", { cache: "no-store" }).then(async (response) => {
       if (!response.ok) return;
       const payload = await response.json() as { data?: RegistryOption[] };
       setRegistries(payload.data ?? []);
@@ -493,18 +546,18 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   }
 
   async function executeServiceAction(service: Service, action: "start" | "stop" | "restart" | "kill" | "pause" | "unpause" | "recreate") {
-    const labels = { start: "iniciar", stop: "detener", restart: "reiniciar", kill: "terminar", pause: "pausar", unpause: "reanudar", recreate: "recrear" };
-    const completedLabels = { start: "iniciado", stop: "detenido", restart: "reiniciado", kill: "terminado", pause: "pausado", unpause: "reanudado", recreate: "recreado" };
+    const labels = { start: "iniciar", stop: "detener", restart: "reiniciar", kill: "forzar la detención de", pause: "pausar", unpause: "reanudar", recreate: "recrear" };
+    const completedLabels = { start: "iniciado", stop: "detenido", restart: "reiniciado", kill: "detenido por la fuerza", pause: "pausado", unpause: "reanudado", recreate: "recreado" };
     setPendingAction(`${service.id}:${action}`);
     setConfirmation(null);
-    setToast({ kind: "info", message: `Solicitando ${labels[action]} ${service.name}…` });
+    setToast({ kind: "info", message: action === "kill" ? (language === "es" ? `Solicitando la detención forzada de ${service.name}…` : `Force-stopping ${service.name}…`) : `Solicitando ${labels[action]} ${service.name}…` });
     try {
       const response = await fetch("/api/services", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ serviceId: service.id, action }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "No fue posible ejecutar la acción");
-      setToast({ kind: "info", message: `${service.name} fue ${completedLabels[action]}. Actualizando estado…` });
+      setToast({ kind: "info", message: action === "kill" ? (language === "es" ? `${service.name} fue detenido por la fuerza. Actualizando estado…` : `${service.name} was force-stopped. Updating status…`) : `${service.name} fue ${completedLabels[action]}. Actualizando estado…` });
       await refreshWithRetry();
-      setToast({ kind: "success", message: `${service.name} fue ${completedLabels[action]} correctamente.` });
+      setToast({ kind: "success", message: action === "kill" ? (language === "es" ? `${service.name} fue detenido por la fuerza correctamente.` : `${service.name} was force-stopped successfully.`) : `${service.name} fue ${completedLabels[action]} correctamente.` });
     } catch (error) {
       const message = error instanceof Error ? error.message : "No fue posible ejecutar la acción";
       setToast({ kind: "error", message: message === "Failed to fetch" ? `${service.name} pudo cambiar, pero no se pudo actualizar la pantalla.` : message });
@@ -593,11 +646,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     }
   }
 
-  function openEdit(service: Service) {
-    if (service.composeProject) {
-      setToast({ kind: "info", message: language === "es" ? `Este contenedor pertenece al proyecto Compose “${service.composeProject}”. Edita el servicio desde su definición Compose para evitar que los cambios se reviertan.` : `This container belongs to Compose project “${service.composeProject}”. Edit its Compose definition to prevent changes from being reverted.` });
-      return;
-    }
+  function openContainerEditor(service: Service) {
     setEditService(service);
     setEditName(service.name);
     setEditPort(service.port ? String(service.port) : "");
@@ -613,6 +662,21 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     setEditRestartPolicy(service.restartPolicy?.name ?? "no");
     setEditMaxRetries(String(service.restartPolicy?.maxRetries ?? 0));
     void loadNetworksForEdit();
+  }
+
+  function openComposeProject(service: Service) {
+    if (!service.composeProject) return;
+    const query = new URLSearchParams({ project: service.composeProject });
+    if (service.composeService) query.set("service", service.composeService);
+    router.push(`/compose?${query.toString()}`);
+  }
+
+  function openEdit(service: Service) {
+    if (service.composeProject) {
+      setComposeEditChoice(service);
+      return;
+    }
+    openContainerEditor(service);
   }
 
   async function loadNetworksForEdit() {
@@ -643,7 +707,8 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     void loadNetworksForEdit();
   }
 
-  function openCreateService() {
+  function openCreateService(context?: { projectId: string; kind: "application" | "database" }) {
+    setNewServiceContext(context ?? null);
     const suggestedPort = nextAvailablePort(catalog.map((item) => item.port));
     setNewServiceName("");
     setNewServiceImage("");
@@ -669,7 +734,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     setToast({ kind: "info", message: `Preparando el nuevo servicio ${name}…` });
     try {
       const environmentVariables = newServiceVariables.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && line.includes("=") && !line.startsWith("#"));
-      const response = await fetch("/api/services", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create", newName: name, newImage: image, newPort: publicPort, internalPort, environmentVariables, runtimeSettings: newServiceRuntimeSettings, networkId: newServiceNetworkId || undefined, restartPolicy: { name: newServiceRestartPolicy, maxRetries: Number(newServiceMaxRetries) || 0 } }) });
+      const response = await fetch("/api/services", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create", newName: name, newImage: image, newPort: publicPort, internalPort, environmentVariables, runtimeSettings: newServiceRuntimeSettings, networkId: newServiceNetworkId || undefined, restartPolicy: { name: newServiceRestartPolicy, maxRetries: Number(newServiceMaxRetries) || 0 }, ...(newServiceContext ? { projectId: newServiceContext.projectId, projectServiceKind: newServiceContext.kind } : {}) }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "No fue posible crear el servicio");
       setNewServiceOpen(false);
@@ -679,7 +744,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       setCloneJob(jobPayload.data ?? null);
       setToast({ kind: "info", message: "Creación iniciada. Puedes seguir usando el portal." });
     } catch (error) {
-      setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible crear el servicio" });
+      setToast({ kind: "error", message: error instanceof Error ? localizeServiceActionError(error.message, language) : "No fue posible crear el servicio" });
     } finally {
       setPendingAction(null);
     }
@@ -705,7 +770,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       setCloneJob(jobPayload.data ?? null);
       setToast({ kind: "info", message: "Trabajo iniciado. Puedes seguir usando el portal." });
     } catch (error) {
-      setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible duplicar el servicio" });
+      setToast({ kind: "error", message: error instanceof Error ? localizeServiceActionError(error.message, language) : "No fue posible duplicar el servicio" });
     } finally {
       setPendingAction(null);
     }
@@ -735,7 +800,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       await refreshWithRetry();
       setToast({ kind: "success", message: `Servicio actualizado: ${name} · puerto ${port}.` });
     } catch (error) {
-      setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible editar el contenedor" });
+      setToast({ kind: "error", message: error instanceof Error ? localizeServiceActionError(error.message, language) : "No fue posible editar el contenedor" });
     } finally {
       setPendingAction(null);
     }
@@ -913,7 +978,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     <main className="app-content inventory-workspace">
       <header className="topbar">
         <div className="inventory-title"><span className="overview-eyebrow">DOCKER / {t(view)}</span><h1>{t(view)}</h1></div>
-        <div className="topbar-badges">{view === "containers" ? <button className="new-service-button" type="button" onClick={openCreateService} disabled={pendingAction !== null}><Icon name="plus" size={16} />{t("new_service")}</button> : null}{view === "volumes" ? <button className="new-service-button" type="button" onClick={() => setCreateVolumeOpen(true)}><Icon name="plus" size={16} />{language === "es" ? "Nuevo volumen" : "New volume"}</button> : null}{view !== "containers" ? <button className="overview-refresh resource-refresh" type="button" onClick={() => setResourceRefreshIndex((value) => value + 1)} disabled={resourceLoading}><Icon name="refresh" size={15} />{t("refresh")}</button> : null}{serviceHost ? <span className="host-badge">Host · {serviceHost}</span> : null}</div>
+        <div className="topbar-badges">{view === "containers" ? <button className="new-service-button" type="button" onClick={() => openCreateService()} disabled={pendingAction !== null}><Icon name="plus" size={16} />{t("new_service")}</button> : null}{view === "volumes" ? <button className="new-service-button" type="button" onClick={() => setCreateVolumeOpen(true)}><Icon name="plus" size={16} />{language === "es" ? "Nuevo volumen" : "New volume"}</button> : null}{view !== "containers" ? <button className="overview-refresh resource-refresh" type="button" onClick={() => setResourceRefreshIndex((value) => value + 1)} disabled={resourceLoading}><Icon name="refresh" size={15} />{t("refresh")}</button> : null}{serviceHost ? <span className="host-badge">Host · {serviceHost}</span> : null}</div>
       </header>
 
       {view === "containers" ? <section className="hero">
@@ -921,13 +986,12 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
         <div className="hero-metric"><strong>{catalog.length}</strong><span>{t("registered_services")}</span></div>
       </section> : null}
 
-      {view === "containers" ? <section className="toolbar" aria-label="Filtros">
+      {view === "containers" ? <section className="toolbar" aria-label={t("filters")}>
         <label className="search"><span>{t("search")}</span><div className="input-with-clear"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search_placeholder")} />{query ? <button className="clear-search" type="button" onClick={() => setQuery("")} aria-label={t("clear_search")} title={t("clear_search")}>×</button> : null}</div></label>
         <CustomSelect label={t("environment")} value={environment} onChange={setEnvironment} options={[{ value: "all", label: t("all") }, { value: "latest", label: "Latest" }, { value: "test", label: t("test") }, { value: "candidate", label: t("candidate") }, { value: "full", label: "Full" }]} />
         <CustomSelect label={t("status")} value={statusFilter} onChange={setStatusFilter} options={[{ value: "all", label: t("all") }, { value: "active", label: t("active") }, { value: "inactive", label: t("inactive") }]} />
         <span className="result-count">{filtered.length} {filtered.length === 1 ? t("result") : t("results")}</span>
       </section> : null}
-      {toast ? <div className={`toast toast-${toast.kind}`} role="status"><span className="toast-icon"><Icon name={toast.kind === "info" ? "loader" : toast.kind === "success" ? "check" : "alert"} size={19} /></span><span>{toast.message}</span><button type="button" aria-label="Cerrar aviso" onClick={() => setToast(null)}>×</button></div> : null}
       {cloneJob ? <aside className={`job-panel${cloneJobMinimized ? " job-panel-minimized" : ""}`} aria-live="polite"><div className="job-panel-head"><div><span className="modal-kicker">{cloneJob.kind === "image" ? "Cambio de imagen" : "Duplicación"} · {cloneJob.status === "running" ? "En curso" : cloneJob.status === "completed" ? "Completada" : "Revisar"}</span>{!cloneJobMinimized ? <strong>{cloneJob.result?.name ?? (cloneJob.kind === "image" ? "Cambio de imagen" : "Nuevo ambiente")}</strong> : null}</div><div className="job-panel-buttons">{cloneJob.status === "failed" && cloneJob.kind === "image" ? <button type="button" onClick={retryCloneJob} aria-label="Reintentar descarga">↻</button> : null}<button type="button" onClick={() => setCloneJobMinimized((value) => !value)} aria-label={cloneJobMinimized ? "Maximizar progreso" : "Minimizar progreso"}>{cloneJobMinimized ? "□" : "—"}</button><button type="button" onClick={dismissCloneJob} aria-label="Cerrar resumen">×</button></div></div>{!cloneJobMinimized ? <><div className="job-progress-track"><span style={{ width: `${Math.max(0, Math.min(100, cloneJob.percent))}%` }} /></div><div className="job-progress-meta"><span>{cloneJob.message}</span><b>{cloneJob.percent}%</b></div>{cloneJob.sharedDataSource ? <div className="job-warning"><Icon name="alert" size={15} /><span><strong>Recurso de datos compartido</strong> Esta duplicación crea solo la aplicación; no restaura ni crea una base de datos independiente.</span></div> : null}{cloneJob.currentItem ? <div className="job-detail">Elemento actual: <strong>{cloneJob.currentItem}</strong></div> : null}<div className="job-detail">{cloneJob.kind === "image" ? "La imagen se descarga antes de recrear el contenedor." : cloneJob.errors ? `Errores reportados: ${cloneJob.errors} · la restauración continúa` : "Sin errores reportados"}</div>{cloneJob.status === "completed" && cloneJob.result ? <div className="job-detail job-success">✓ Operación completada · {cloneJob.result.port ? `puerto ${cloneJob.result.port}` : "sin puerto publicado"}</div> : null}{cloneJob.status === "failed" && cloneJob.kind === "image" ? <button className="job-retry-button" type="button" onClick={retryCloneJob}>↻ Reintentar descarga</button> : null}</> : null}</aside> : null}
       {labelService ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal edit-modal label-modal" role="dialog" aria-modal="true" aria-labelledby="labels-title"><span className="modal-kicker"><Icon name="tag" size={13} />Metadatos de Vessel</span><h2 id="labels-title"><Icon name="tag" size={19} />Etiquetas del contenedor</h2><p>Organiza <strong>{labelService.name}</strong> con etiquetas propias del portal. No modifican Docker.</p><div className="label-chips">{(labelsByContainer[labelService.id] ?? []).map((label) => <span className="label-chip" key={label}>{label}<button type="button" onClick={() => deleteLabel(label)} aria-label="Quitar etiqueta">×</button></span>)}{!(labelsByContainer[labelService.id] ?? []).length ? <span className="labels-empty">Aún no hay etiquetas asignadas.</span> : null}</div><div className="label-add-row"><input value={labelDraft} onChange={(event) => setLabelDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveLabel(); } }} maxLength={64} placeholder="ej. cliente, pruebas, prioridad-alta" autoFocus /><button className="primary-button" type="button" onClick={saveLabel} disabled={!labelDraft.trim() || labelSaving}>{labelSaving ? <><Icon name="loader" size={15} />Guardando…</> : <><Icon name="plus" size={15} />Agregar</>}</button></div><div className="modal-actions"><button type="button" onClick={() => setLabelService(null)}><Icon name="x" size={14} />{t("close")}</button></div></section></div> : null}
       {createVolumeOpen ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal volume-modal" role="dialog" aria-modal="true" aria-labelledby="volume-create-title"><span className="modal-kicker"><Icon name="database" size={14} />Docker · {t("volumes")}</span><h2 id="volume-create-title"><Icon name="plus" size={19} />{language === "es" ? "Crear volumen" : "Create volume"}</h2><p>{language === "es" ? "Se creará un volumen local sin asociarlo todavía a ningún contenedor." : "A local volume will be created without attaching it to a container."}</p><label className="modal-field"><span>{language === "es" ? "Nombre del volumen" : "Volume name"}</span><input value={createVolumeName} onChange={(event) => setCreateVolumeName(event.target.value)} maxLength={128} placeholder="mi-volumen" autoFocus /></label><div className="modal-actions"><button type="button" onClick={() => setCreateVolumeOpen(false)} disabled={volumeCreating}>{t("cancel")}</button><button className="primary-button" type="button" onClick={createVolume} disabled={volumeCreating || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(createVolumeName.trim())}><Icon name={volumeCreating ? "loader" : "plus"} size={15} />{volumeCreating ? (language === "es" ? "Creando…" : "Creating…") : (language === "es" ? "Crear volumen" : "Create volume")}</button></div></section></div> : null}
@@ -936,7 +1000,8 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       {imageDeleteConfirm ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="image-delete-title"><span className="modal-kicker">Imágenes de Docker</span><h2 id="image-delete-title">Borrar imágenes seleccionadas</h2><p>¿Confirmas borrar <strong>{selectedImages.size} imagen(es)</strong>? El servidor verificará todos los contenedores, incluso los inactivos. Si alguna imagen está en uso, no se borrará ninguna.</p><div className="modal-actions"><button type="button" onClick={() => setImageDeleteConfirm(false)} disabled={imageDeleting}>{t("cancel")}</button><button className="danger-button" type="button" onClick={deleteSelectedImages} disabled={imageDeleting}>{imageDeleting ? <><Icon name="loader" size={15} />Borrando…</> : <><Icon name="alert" size={15} />Confirmar borrado</>}</button></div></section></div> : null}
 
       {newServiceOpen ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal edit-modal new-service-modal" role="dialog" aria-modal="true" aria-labelledby="new-service-title">
-        <span className="modal-kicker">Vessel · {language === "es" ? "Nuevo servicio" : "New service"}</span><h2 id="new-service-title"><Icon name="plus" size={19} />{language === "es" ? "Crear servicio" : "Create service"}</h2>
+        <span className="modal-kicker">Vessel · {newServiceContext ? (language === "es" ? newServiceContext.kind === "database" ? "Proyecto · Base de datos" : "Proyecto · Aplicación" : `Project · ${newServiceContext.kind === "database" ? "Database" : "Application"}`) : (language === "es" ? "Nuevo servicio" : "New service")}</span><h2 id="new-service-title"><Icon name="plus" size={19} />{language === "es" ? newServiceContext?.kind === "database" ? "Crear servicio de datos" : newServiceContext ? "Crear aplicación" : "Crear servicio" : newServiceContext?.kind === "database" ? "Create database service" : newServiceContext ? "Create application" : "Create service"}</h2>
+        {newServiceContext ? <p className="project-create-context">{language === "es" ? "Al completar la creación, el servicio quedará asociado automáticamente al proyecto." : "After creation, the service will be linked to this project automatically."}</p> : null}
         <p>{language === "es" ? <>Se descargará la imagen Docker y se creará un contenedor nuevo. Para conservar variables y volúmenes de otro servicio usa <strong>{t("duplicate")}</strong>.</> : <>The Docker image will be pulled and a new container created. To preserve another service's variables and volumes, use <strong>{t("duplicate")}</strong>.</>}</p>
         <div className="modal-tabs" role="tablist">
           <button type="button" className={newServiceTab === "container" ? "active" : ""} onClick={() => setNewServiceTab("container")}><Icon name="box" size={14} />{t("container")}</button>
@@ -948,7 +1013,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
           <label className="modal-field"><span>{t("docker_image")}</span><input value={newServiceImage} onChange={(event) => setNewServiceImage(event.target.value)} maxLength={512} placeholder="registry/organization/image:tag" /></label>
           <div className="new-service-port-grid"><label className="modal-field"><span>{t("internal_port")}</span><input value={newServiceInternalPort} onChange={(event) => setNewServiceInternalPort(event.target.value)} type="number" min="1" max="65535" /></label><label className="modal-field"><span>{t("public_port")}</span><input value={newServicePublicPort} onChange={(event) => setNewServicePublicPort(event.target.value)} type="number" min="1" max="65535" /></label></div>
           <CustomSelect icon="layers" label={language === "es" ? "Red Docker" : "Docker network"} value={newServiceNetworkId} onChange={setNewServiceNetworkId} options={[{ value: "", label: language === "es" ? "Predeterminada del Engine (bridge)" : "Engine default (bridge)" }, ...networks.map((network) => ({ value: network.Id, label: network.Name }))]} />
-          <CustomSelect icon="refresh" label={t("policy")} value={newServiceRestartPolicy} onChange={(value) => setNewServiceRestartPolicy(value as RestartPolicy)} options={restartPolicyOptions} />
+          <CustomSelect icon="refresh" label={t("policy")} value={newServiceRestartPolicy} onChange={(value) => setNewServiceRestartPolicy(value as RestartPolicy)} options={restartPolicyOptions(language)} />
           {newServiceRestartPolicy === "on-failure" ? <label className="modal-field retry-field"><span>{t("max_retries")}</span><input value={newServiceMaxRetries} onChange={(event) => setNewServiceMaxRetries(event.target.value)} type="number" min="0" max="1000000" /></label> : null}
         </div> : newServiceTab === "variables" ? <EnvironmentVariablesEditor value={newServiceVariables} onChange={setNewServiceVariables} /> : <RuntimeSettingsEditor value={newServiceRuntimeSettings} onChange={setNewServiceRuntimeSettings} />}
         <p className="modal-note">{language === "es" ? "El servicio se iniciará automáticamente después de crearlo." : "The service starts automatically after creation."}</p>
@@ -984,7 +1049,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
               <td className="container-select-cell"><input type="checkbox" checked={selectedServices.has(service.id)} onChange={() => toggleServiceSelection(service.id)} disabled={bulkAction !== null} aria-label={`${language === "es" ? "Seleccionar" : "Select"} ${service.name}`} /></td>
               <td><button type="button" className="container-name-link" onClick={() => openEdit(service)}>{service.name}</button><small>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]}</small></td>
               <td><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span></td>
-              {visibleContainerColumns.has("compose") ? <td>{service.composeProject ?? "—"}</td> : null}
+              {visibleContainerColumns.has("compose") ? <td>{service.composeProject ? <button type="button" className="container-compose-link" onClick={() => openComposeProject(service)} title={language === "es" ? "Abrir este proyecto Compose" : "Open this Compose project"}>▣ {service.composeProject}</button> : "—"}</td> : null}
               {visibleContainerColumns.has("image") ? <td className="container-table-image" title={service.image ?? undefined}>{service.image ?? "—"}</td> : null}
               {visibleContainerColumns.has("created") ? <td>{formatDateTime(service.createdAt ?? undefined, language)}</td> : null}
               {visibleContainerColumns.has("ip") ? <td className="container-table-image" title={service.ipAddresses?.join(", ")}>{service.ipAddresses?.join(", ") || "—"}</td> : null}
@@ -995,17 +1060,17 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             </tr>
             {openTableMenu === service.id ? <tr className="container-table-expanded-row"><td colSpan={visibleContainerColumns.size + 4}><div className="container-table-expanded-actions"><button type="button" onClick={() => { openEdit(service); setOpenTableMenu(null); }}><Icon name="pencil" size={15} />{t("edit")}</button><button type="button" onClick={() => { requestServiceAction(service, "restart"); setOpenTableMenu(null); }}><Icon name="refresh" size={15} />{t("restart")}</button><button type="button" onClick={() => { requestServiceAction(service, service.status === "paused" ? "unpause" : "pause"); setOpenTableMenu(null); }} disabled={service.status !== "running" && service.status !== "paused"}><Icon name={service.status === "paused" ? "play" : "pause"} size={15} />{service.status === "paused" ? t("resume") : t("pause")}</button><button type="button" onClick={() => { requestServiceAction(service, "kill"); setOpenTableMenu(null); }} disabled={service.status !== "running" && service.status !== "unhealthy"}><Icon name="kill" size={15} />{t("kill")}</button><button type="button" onClick={() => { requestServiceAction(service, "recreate"); setOpenTableMenu(null); }}><Icon name="box" size={15} />{t("recreate")}</button><button type="button" onClick={() => { openDuplicate(service); setOpenTableMenu(null); }}><Icon name="layers" size={15} />{t("duplicate")}</button><button type="button" onClick={() => { openLabelManager(service); setOpenTableMenu(null); }}><Icon name="tag" size={15} />{t("labels")}</button><button type="button" className="table-delete" onClick={() => { setDeleteService(service); setOpenTableMenu(null); }}><Icon name="alert" size={15} />{t("delete")}</button></div></td></tr> : null}
           </Fragment>)}</tbody></table>{!filtered.length ? <div className="container-table-empty">{language === "es" ? "No hay contenedores para este filtro." : "No containers match this filter."}</div> : null}</div>
-        </> : <section className="grid" aria-label="Contenedores">
+        </> : <section className="grid" aria-label={t("containers")}>
         {filtered.map((service) => <article className="service-card" key={service.id}>
-          <div className="service-card-head"><div className="service-title"><span className="service-icon"><Icon name={categoryIcon[service.category]} size={18} /></span><div><h3>{service.name}</h3><span className="muted" title={service.image ?? undefined}>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]} · {environmentLabel(service.environment)}{service.composeProject ? <span className="compose-badge">▣ Compose · {service.composeProject}</span> : null}</span></div></div><div className="service-head-actions"><div className="status-block"><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span><span className="status-since">{service.status === "unhealthy" ? t("unhealthy") : localizedStatusSince(service.statusSince, language)}</span></div><button className="edit-button" type="button" onClick={() => openEdit(service)} disabled={isServicePending(service.id)} title={t("edit")} aria-label={`${t("edit")} ${service.name}`}><Icon name="pencil" size={15} /></button></div></div>
-          <div className="image-line"><span className="image-label"><Icon name="image" size={14} />{t("image")}</span><span className="image-name" title={service.image ?? undefined}>{service.image ?? "—"}</span><button className="copy-button" type="button" onClick={() => copyImage(service.image)} disabled={!service.image} title="Copiar imagen" aria-label="Copiar imagen"><Icon name="copy" size={15} /></button></div>
+          <div className="service-card-head"><div className="service-title"><span className="service-icon"><Icon name={categoryIcon[service.category]} size={18} /></span><div><h3>{service.name}</h3><span className="muted" title={service.image ?? undefined}>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]} · {environmentLabel(service.environment, t)}{service.composeProject ? <button type="button" className="compose-badge compose-badge-button" onClick={() => openComposeProject(service)}>▣ Compose · {service.composeProject}</button> : null}</span></div></div><div className="service-head-actions"><div className="status-block"><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span><span className="status-since">{service.status === "unhealthy" ? t("unhealthy") : localizedStatusSince(service.statusSince, language)}</span></div><button className="edit-button" type="button" onClick={() => openEdit(service)} disabled={isServicePending(service.id)} title={t("edit")} aria-label={`${t("edit")} ${service.name}`}><Icon name="pencil" size={15} /></button></div></div>
+          <div className="image-line"><span className="image-label"><Icon name="image" size={14} />{t("image")}</span><span className="image-name" title={service.image ?? undefined}>{service.image ?? "—"}</span><button className="copy-button" type="button" onClick={() => copyImage(service.image)} disabled={!service.image} title={t("copy_image")} aria-label={t("copy_image")}><Icon name="copy" size={15} /></button></div>
           {(labelsByContainer[service.id] ?? []).length ? <div className="service-tags"><Icon name="tag" size={13} />{(labelsByContainer[service.id] ?? []).map((label) => <span className="service-tag" key={label}>{label}</span>)}</div> : null}
-          <dl><div><dt><span className="field-label"><Icon name="port" size={13} />{t("port")}</span></dt><dd>{service.port || "—"}</dd></div><div><dt><span className="field-label"><Icon name="tag" size={13} />{t("version")}</span></dt><dd title={service.imageVersion ?? undefined}>{service.imageVersion ?? "Sin tag"}</dd></div><div className="database-field"><dt><span className="field-label"><Icon name="database" size={13} />{t("database")}</span></dt><dd title={service.databaseTarget ?? undefined}>{service.databaseTarget ?? "No configurada"}</dd></div><div className="network-field"><dt><span className="field-label"><Icon name="layers" size={13} />{t("networks")}</span></dt><dd title={service.networks.join(", ")}>{service.networks.length ? service.networks.join(", ") : "Sin red"}</dd></div></dl>
+          <dl><div><dt><span className="field-label"><Icon name="port" size={13} />{t("port")}</span></dt><dd>{service.port || "—"}</dd></div><div><dt><span className="field-label"><Icon name="tag" size={13} />{t("version")}</span></dt><dd title={service.imageVersion ?? undefined}>{service.imageVersion ?? t("no_tag")}</dd></div>{service.databaseTarget ? <div className="database-field"><dt><span className="field-label"><Icon name="database" size={13} />{t("database")}</span></dt><dd title={service.databaseTarget}>{service.databaseTarget}</dd></div> : null}<div className="network-field"><dt><span className="field-label"><Icon name="layers" size={13} />{t("networks")}</span></dt><dd title={service.networks.join(", ")}>{service.networks.length ? service.networks.join(", ") : t("no_network")}</dd></div></dl>
           <div className="card-actions">
-            {service.status === "stopped" ? <button className="primary-button service-off" type="button" disabled><Icon name="stop" size={15} />{t("service_off")}</button> : service.ready && service.url ? <a className="primary-button" href={service.url} target="_blank" rel="noreferrer"><Icon name="external" size={15} />{t("open_service")}</a> : <button className="primary-button service-off" type="button" disabled><Icon name={service.status === "starting" ? "loader" : service.status === "paused" ? "pause" : "box"} size={15} />{service.status === "starting" ? "Verificando…" : service.status === "paused" ? t("paused") : t("no_available")}</button>}
+            {service.status === "stopped" ? <button className="primary-button service-off" type="button" disabled><Icon name="stop" size={15} />{t("service_off")}</button> : service.ready && service.url ? <a className="primary-button" href={service.url} target="_blank" rel="noreferrer"><Icon name="external" size={15} />{t("open_service")}</a> : <button className="primary-button service-off" type="button" disabled><Icon name={service.status === "starting" ? "loader" : service.status === "paused" ? "pause" : "box"} size={15} />{service.status === "starting" ? t("verifying") : service.status === "paused" ? t("paused") : t("no_available")}</button>}
             <button type="button" onClick={() => requestServiceAction(service, service.status === "paused" ? "unpause" : "start")} disabled={service.status === "running" || service.status === "unhealthy" || service.status === "starting" || isServicePending(service.id)}><Icon name={service.status === "starting" ? "loader" : "play"} size={14} />{service.status === "paused" ? t("resume") : t("start")}</button>
-            <button type="button" onClick={() => requestServiceAction(service, "stop")} disabled={(service.status !== "running" && service.status !== "unhealthy") || isServicePending(service.id)}><Icon name="stop" size={14} />{t("stop")}</button>
-            <button type="button" onClick={() => requestServiceAction(service, service.status === "paused" ? "unpause" : "pause")} disabled={(service.status !== "running" && service.status !== "paused") || isServicePending(service.id)}><Icon name={service.status === "paused" ? "play" : "pause"} size={14} />{service.status === "paused" ? t("resume") : t("pause")}</button>
+            <button type="button" title={language === "es" ? "Cierra el proceso de forma ordenada y lo detiene." : "Gracefully asks the process to exit, then stops it."} onClick={() => requestServiceAction(service, "stop")} disabled={(service.status !== "running" && service.status !== "unhealthy") || isServicePending(service.id)}><Icon name="stop" size={14} />{t("stop")}</button>
+            <button type="button" title={language === "es" ? "Congela temporalmente los procesos; no los termina ni libera su memoria." : "Temporarily freezes processes; it does not terminate them or release their memory."} onClick={() => requestServiceAction(service, service.status === "paused" ? "unpause" : "pause")} disabled={(service.status !== "running" && service.status !== "paused") || isServicePending(service.id)}><Icon name={service.status === "paused" ? "play" : "pause"} size={14} />{service.status === "paused" ? t("resume") : t("pause")}</button>
             <button type="button" onClick={() => requestServiceAction(service, "kill")} disabled={(service.status !== "running" && service.status !== "unhealthy") || isServicePending(service.id)}><Icon name="kill" size={14} />{t("kill")}</button>
             <button type="button" onClick={() => requestServiceAction(service, "restart")} disabled={isServicePending(service.id)}><Icon name="refresh" size={14} />{t("restart")}</button>
             <button type="button" onClick={() => requestServiceAction(service, "recreate")} disabled={isServicePending(service.id)}><Icon name="box" size={14} />{t("recreate")}</button>
@@ -1013,13 +1078,13 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
           </div>
         </article>)}
       </section>}</> : <section key={view} className="resource-panel" aria-live="polite">
-        {resourceLoading ? <div className="empty-state"><Icon name="loader" size={22} />{t("loading_resources")}</div> : view === "images" ? <>
+        {resourceLoading ? <ResourceListLoadingSkeleton variant={view === "networks" || view === "volumes" ? view : "images"} label={language === "es" ? `Cargando ${view === "images" ? "imágenes" : view === "volumes" ? "volúmenes" : "redes"}` : `Loading ${view}`} /> : view === "images" ? <>
           <div className="resource-toolbar">
             <label className="resource-search"><span>{t("search")}</span><input value={imageQuery} onChange={(event) => setImageQuery(event.target.value)} placeholder={language === "es" ? "Registry, etiqueta o digest…" : "Registry, tag, or digest…"} /></label>
             <CustomSelect label={t("filter")} value={imageFilter} onChange={setImageFilter} options={[{ value: "all", label: t("all_images") }, { value: "untagged", label: t("untagged") }, { value: "unused", label: t("unused") }]} />
             <div className="image-total"><span>{t("total_images")}</span><strong>{images.length}</strong><small>{formatBytes(totalImageBytes)}</small></div>
           </div>
-          <div className="resource-actions"><button type="button" onClick={() => setSelectedImages(allFilteredImagesSelected ? new Set() : new Set(filteredImages.map((image) => image.Id)))} disabled={!filteredImages.length}><span className="fake-checkbox" aria-hidden="true">{allFilteredImagesSelected ? "✓" : ""}</span>{allFilteredImagesSelected ? t("remove_selection") : `${t("select_results")} (${filteredImages.length})`}</button><span>{selectedImages.size} {t("selected")}</span><button className="delete-resource-button" type="button" onClick={() => setImageDeleteConfirm(true)} disabled={!selectedImages.size || imageDeleting}><Icon name="alert" size={14} />{t("delete_selected")}</button></div>
+          <div className={`resource-actions${selectedImages.size ? " has-selection" : ""}`}><button type="button" onClick={() => setSelectedImages(allFilteredImagesSelected ? new Set() : new Set(filteredImages.map((image) => image.Id)))} disabled={!filteredImages.length}><span className="fake-checkbox" aria-hidden="true">{allFilteredImagesSelected ? "✓" : ""}</span>{allFilteredImagesSelected ? t("remove_selection") : `${t("select_results")} (${filteredImages.length})`}</button><span>{selectedImages.size} {t("selected")}</span><button className="delete-resource-button" type="button" onClick={() => setImageDeleteConfirm(true)} disabled={!selectedImages.size || imageDeleting} data-tooltip={language === "es" ? "Eliminar las imágenes seleccionadas." : "Delete the selected images."}><Icon name="trash" size={14} />{t("delete_selected")}</button></div>
           <div className="resource-list">{filteredImages.length ? filteredImages.map((image) => <article className={`resource-row${selectedImages.has(image.Id) ? " selected" : ""}`} key={image.Id}><label className="image-checkbox"><input type="checkbox" checked={selectedImages.has(image.Id)} onChange={() => toggleImage(image.Id)} aria-label={`${language === "es" ? "Seleccionar" : "Select"} ${image.RepoTags?.[0] ?? image.Id}`} /><span className="fake-checkbox">{selectedImages.has(image.Id) ? "✓" : ""}</span></label><span className="resource-row-icon"><Icon name="image" size={18} /></span><div><strong title={image.RepoTags?.join(", ") ?? undefined}>{image.RepoTags?.join(", ") ?? (language === "es" ? "Imagen sin etiqueta" : "Untagged image")}</strong><span title={image.RepoDigests?.join(", ") ?? image.Id}>{image.RepoDigests?.[0] ?? image.Id.slice(0, 19)}</span><small className={image.used ? "image-in-use" : "image-unused"}>{image.used ? t("in_use") : t("unused_resource")} · {t("created")}: {formatDateTime(image.Created, language)}</small></div><span className="resource-size">{formatBytes(image.Size)}</span><button className="copy-button" type="button" disabled={!image.RepoTags?.[0]} onClick={() => copyImage(image.RepoTags?.[0] ?? null)} title={t("copy_image")}><Icon name="copy" size={15} /></button></article>) : <div className="empty-state">{t("no_images")}</div>}</div>
         </> : view === "networks" ? <>
           <div className="resource-toolbar network-toolbar">
@@ -1039,7 +1104,8 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
         </>}
       </section>}
 
-      {confirmation ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><span className="modal-kicker"><Icon name="alert" size={13} />Acción de Vessel</span><h2 id="confirm-title"><Icon name={confirmation.action === "recreate" || confirmation.action === "restart" ? "refresh" : confirmation.action === "stop" ? "stop" : confirmation.action === "pause" ? "pause" : confirmation.action === "kill" ? "kill" : "play"} size={19} />Confirmar acción</h2><p>¿Confirmas {({ start: t("confirm_start"), stop: t("confirm_stop"), restart: t("confirm_restart"), kill: t("kill").toLowerCase(), pause: t("pause").toLowerCase(), unpause: t("resume").toLowerCase(), recreate: t("confirm_recreate") } as Record<typeof confirmation.action, string>)[confirmation.action]} el contenedor <strong>{confirmation.service.name}</strong>?</p><div className="modal-actions"><button type="button" onClick={() => setConfirmation(null)}><Icon name="x" size={14} />{t("cancel")}</button><button className="danger-button" type="button" onClick={() => executeServiceAction(confirmation.service, confirmation.action)}><Icon name="check" size={15} />{t("confirm")}</button></div></section></div> : null}
+      {composeEditChoice ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setComposeEditChoice(null); }}><section className="confirm-modal compose-edit-choice" role="dialog" aria-modal="true" aria-labelledby="compose-edit-choice-title"><span className="modal-kicker"><Icon name="layers" size={14} />{language === "es" ? "Servicio administrado por Compose" : "Compose-managed service"}</span><h2 id="compose-edit-choice-title">{language === "es" ? "¿Qué quieres editar?" : "What would you like to edit?"}</h2><p>{language === "es" ? <>Este contenedor pertenece al proyecto <strong>{composeEditChoice.composeProject}</strong>. Editar el contenedor directamente lo recreará y un próximo despliegue Compose podría reemplazar los cambios.</> : <>This container belongs to Compose project <strong>{composeEditChoice.composeProject}</strong>. Direct container edits recreate it, and a later Compose deployment may overwrite those changes.</>}</p><div className="compose-edit-choice-actions"><button type="button" onClick={() => { const service = composeEditChoice; setComposeEditChoice(null); openContainerEditor(service); }}><Icon name="pencil" size={16} /><span><strong>{language === "es" ? "Editar contenedor" : "Edit container"}<small>{language === "es" ? "Cambiar la configuración efectiva de Docker" : "Change the effective Docker configuration"}</small></strong></span></button><button className="primary-button" type="button" onClick={() => { const service = composeEditChoice; setComposeEditChoice(null); openComposeProject(service); }}><Icon name="layers" size={16} /><span><strong>{language === "es" ? "Abrir proyecto Compose" : "Open Compose project"}<small>{language === "es" ? "Editar la definición que controla el servicio" : "Edit the definition that controls this service"}</small></strong></span></button></div><div className="modal-actions"><button type="button" onClick={() => setComposeEditChoice(null)}><Icon name="x" size={14} />{t("cancel")}</button></div></section></div> : null}
+      {confirmation ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><span className="modal-kicker"><Icon name="alert" size={13} />Acción de Vessel</span><h2 id="confirm-title"><Icon name={confirmation.action === "recreate" || confirmation.action === "restart" ? "refresh" : confirmation.action === "stop" ? "stop" : confirmation.action === "pause" ? "pause" : confirmation.action === "kill" ? "kill" : "play"} size={19} />Confirmar acción</h2><p>{confirmation.action === "kill" ? (language === "es" ? "¿Confirmas forzar la detención del contenedor " : "Confirm you want to force-stop the container ") : `¿Confirmas ${({ start: t("confirm_start"), stop: t("confirm_stop"), restart: t("confirm_restart"), kill: t("kill").toLowerCase(), pause: t("pause").toLowerCase(), unpause: t("resume").toLowerCase(), recreate: t("confirm_recreate") } as Record<typeof confirmation.action, string>)[confirmation.action]} el contenedor `}<strong>{confirmation.service.name}</strong>?</p><div className="modal-actions"><button type="button" onClick={() => setConfirmation(null)}><Icon name="x" size={14} />{t("cancel")}</button><button className="danger-button" type="button" onClick={() => executeServiceAction(confirmation.service, confirmation.action)}><Icon name="check" size={15} />{t("confirm")}</button></div></section></div> : null}
       {bulkConfirmation ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="bulk-confirm-title"><span className="modal-kicker"><Icon name={bulkConfirmation === "start" ? "play" : "stop"} size={13} />{language === "es" ? "Acción sobre selección" : "Bulk action"}</span><h2 id="bulk-confirm-title">{language === "es" ? (bulkConfirmation === "start" ? "Iniciar contenedores" : "Detener contenedores") : (bulkConfirmation === "start" ? "Start containers" : "Stop containers")}</h2><p>{language === "es" ? `Se ${bulkConfirmation === "start" ? "iniciarán" : "detendrán"} ${bulkConfirmation === "start" ? bulkStartable.length : bulkStoppable.length} contenedor(es) seleccionado(s). Los que no correspondan a esta acción se omitirán.` : `${bulkConfirmation === "start" ? "Start" : "Stop"} ${bulkConfirmation === "start" ? bulkStartable.length : bulkStoppable.length} selected container(s). Containers not eligible for this action will be skipped.`}</p><div className="modal-actions"><button type="button" onClick={() => setBulkConfirmation(null)}><Icon name="x" size={14} />{t("cancel")}</button><button className={bulkConfirmation === "stop" ? "danger-button" : "primary-button"} type="button" onClick={() => void executeBulkServiceAction()}><Icon name="check" size={15} />{t("confirm")}</button></div></section></div> : null}
       {deleteService ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-service-title"><span className="modal-kicker">Acción de Vessel</span><h2 id="delete-service-title">Borrar contenedor</h2><p>¿Confirmas borrar <strong>{deleteService.name}</strong>? Se eliminará el contenedor de Docker, pero no sus volúmenes ni la imagen.</p><div className="modal-actions"><button type="button" onClick={() => setDeleteService(null)} disabled={pendingAction !== null}>{t("cancel")}</button><button className="danger-button" type="button" onClick={executeDeleteService} disabled={pendingAction !== null}>{pendingAction?.endsWith(":delete") ? <><Icon name="loader" size={15} />Borrando…</> : <><Icon name="alert" size={15} />Confirmar borrado</>}</button></div></section></div> : null}
       {editService ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal edit-modal service-edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-title">
@@ -1053,32 +1119,29 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
         {editTab === "container" ? <div className="modal-tab-content">
           <CustomSelect icon="layers" label={language === "es" ? "Red Docker" : "Docker network"} value={editNetworkId} onChange={setEditNetworkId} options={[{ value: "preserve", label: editService.networks.length ? `${language === "es" ? "Conservar" : "Keep"}: ${editService.networks.join(", ")}` : t("preserve_current") }, ...networks.map((network) => ({ value: network.Id, label: network.Name }))]} />
           <p className="modal-note network-summary"><Icon name="layers" size={14} />{language === "es" ? "Al elegir otra red, se conectará después de recrear el contenedor." : "A different network will be connected after the container is recreated."}</p>
-          <CustomSelect icon="refresh" label={t("policy")} value={editRestartPolicy} onChange={setEditRestartPolicy} options={[{ value: "preserve", label: t("preserve_policy") }, ...restartPolicyOptions]} />
+          <CustomSelect icon="refresh" label={t("policy")} value={editRestartPolicy} onChange={setEditRestartPolicy} options={[{ value: "preserve", label: t("preserve_policy"), icon: "check" }, ...restartPolicyOptions(language)]} />
           {editRestartPolicy === "on-failure" ? <label className="modal-field retry-field"><span>{t("max_retries")}</span><input value={editMaxRetries} onChange={(event) => setEditMaxRetries(event.target.value)} type="number" min="0" max="1000000" /></label> : null}
           <label className="modal-field"><span><Icon name="box" size={14} />{t("container_name")}</span><input value={editName} onChange={(event) => setEditName(event.target.value)} autoFocus maxLength={128} /></label>
           <label className="modal-field"><span><Icon name="port" size={14} />{t("public_port")}</span><input value={editPort} onChange={(event) => setEditPort(event.target.value)} type="number" min="1" max="65535" /></label>
           <div className="image-edit-grid"><label className="modal-field"><span><Icon name="image" size={14} />{t("registry")}</span><input value={editRegistry} readOnly title={language === "es" ? "Se conserva el registry actual" : "The current registry is preserved"} /></label><label className="modal-field"><span><Icon name="tag" size={14} />{t("image_tag")}</span><input value={editImage} onChange={(event) => setEditImage(event.target.value)} maxLength={512} placeholder="organization/image:tag" /></label></div>
         </div> : editTab === "variables" ? <EnvironmentVariablesEditor value={editVariables} onChange={setEditVariables} /> : editRuntimeSettings ? <RuntimeSettingsEditor value={editRuntimeSettings} onChange={setEditRuntimeSettings} /> : <p className="runtime-unavailable">{language === "es" ? "No se pudieron leer los ajustes actuales del Engine; se conservarán sin cambios." : "Current Engine settings could not be read; they will be left unchanged."}</p>}
-        <div className="modal-actions"><button type="button" onClick={() => setEditService(null)} disabled={pendingAction !== null}><Icon name="x" size={14} />{t("cancel")}</button><button className="danger-button" type="button" onClick={saveEdit} disabled={pendingAction !== null || !editName.trim() || !editPort || !editImage.trim()}>{pendingAction?.endsWith(":edit") ? <><Icon name="loader" size={15} />{t("recreating_action")}</> : <><Icon name="pencil" size={15} />{t("applying_changes")}</>}</button></div>
+        <div className="modal-actions"><button type="button" onClick={() => setEditService(null)} disabled={pendingAction !== null}><Icon name="x" size={15} />{t("cancel")}</button><button className="danger-button" type="button" onClick={saveEdit} disabled={pendingAction !== null || !editName.trim() || !editPort || !editImage.trim()}>{pendingAction?.endsWith(":edit") ? <><Icon name="loader" size={15} />{t("recreating_action")}</> : <><Icon name="pencil" size={15} />{t("applying_changes")}</>}</button></div>
       </section></div> : null}
       {duplicateService ? <div className="modal-backdrop" role="presentation">
         <section className="confirm-modal edit-modal" role="dialog" aria-modal="true" aria-labelledby="duplicate-title">
           <span className="modal-kicker"><Icon name="layers" size={13} />{language === "es" ? "Clonar ambiente" : "Clone environment"}</span>
           <h2 id="duplicate-title"><Icon name="layers" size={19} />{language === "es" ? "Duplicar aplicación" : "Duplicate application"}</h2>
           <p>{language === "es" ? "Elige qué quieres crear a partir de" : "Choose what to create from"} <strong>{duplicateService.name}</strong>.</p>
-          {duplicateService.dataCloneEngine ? <div className="duplicate-modes" role="radiogroup" aria-label={language === "es" ? "Modo de duplicación" : "Duplication mode"}>
-            <button type="button" className={duplicateMode === "data" ? "selected" : ""} onClick={() => { setDuplicateMode("data"); setDuplicateDataTarget(`${duplicateService.databaseTarget || duplicateService.name}_2`); setDuplicateAcknowledged(false); }}>
+          <div className="duplicate-modes" role="radiogroup" aria-label={language === "es" ? "Modo de duplicación" : "Duplication mode"}>
+            <button type="button" role="radio" aria-checked={duplicateMode === "data"} disabled={!duplicateService.dataCloneEngine} className={`${duplicateMode === "data" ? "selected" : ""}${duplicateService.dataCloneEngine ? "" : " unavailable"}`} onClick={() => { if (!duplicateService.dataCloneEngine) return; setDuplicateMode("data"); setDuplicateDataTarget(`${duplicateService.databaseTarget || duplicateService.name}_2`); setDuplicateAcknowledged(false); }}>
               <strong><Icon name="database" size={15} />{language === "es" ? "Aplicación + datos" : "Application + data"}</strong>
-              <span>{language === "es" ? `Copia el recurso de datos con el motor detectado (${duplicateService.dataCloneEngine}) y crea un entorno independiente.` : `Copies the data resource using the detected ${duplicateService.dataCloneEngine} engine and creates an independent environment.`}</span>
+              <span>{duplicateService.dataCloneEngine ? (language === "es" ? `Copia el recurso de datos con el motor detectado (${duplicateService.dataCloneEngine}) y crea un entorno independiente.` : `Copies the data resource using the detected ${duplicateService.dataCloneEngine} engine and creates an independent environment.`) : (language === "es" ? "No disponible: no se detectó una conexión completa a una base compatible en este contenedor." : "Unavailable: no complete connection to a supported database was detected in this container.")}</span>
             </button>
-            <button type="button" className={duplicateMode === "application" ? "selected" : ""} onClick={() => { setDuplicateMode("application"); setDuplicateAcknowledged(false); }}>
+            <button type="button" role="radio" aria-checked={duplicateMode === "application"} className={duplicateMode === "application" ? "selected" : ""} onClick={() => { setDuplicateMode("application"); setDuplicateAcknowledged(false); }}>
               <strong><Icon name="box" size={15} />{language === "es" ? "Solo aplicación" : "Application only"}</strong>
               <span>{language === "es" ? "Crea otro contenedor y conserva la conexión al recurso de origen." : "Creates another container and keeps it connected to the original data resource."}</span>
             </button>
-          </div> : duplicateService.databaseTarget ? <div className="duplicate-warning" role="status">
-            <strong>{language === "es" ? "Copia de datos no disponible" : "Data copy unavailable"}</strong>
-            <span>{language === "es" ? "No se detectó un adaptador de copia compatible en la configuración del servicio. Puedes duplicar solo la aplicación." : "No compatible data-copy adapter was detected in this service configuration. You can duplicate the application only."}</span>
-          </div> : null}
+          </div>
           {duplicateMode === "application" && duplicateService.databaseTarget ? <div className="duplicate-warning" role="alert">
             <strong>{language === "es" ? "Recurso de datos compartido" : "Shared data resource"}</strong>
             <span>{language === "es" ? "El nuevo contenedor usará la conexión definida en sus variables. Los cambios de cualquiera de las aplicaciones afectarán los mismos datos." : "The new container will use the connection defined by its environment variables. Changes from either application affect the same data."}</span>
@@ -1098,7 +1161,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             <label className="modal-field"><span><Icon name="image" size={14} />{t("docker_image")}</span><input value={duplicateImage} onChange={(event) => setDuplicateImage(event.target.value)} maxLength={512} placeholder="registry/organization/image:tag" /></label>
             {duplicateService.port ? <label className="modal-field"><span><Icon name="port" size={14} />{t("public_port")}</span><input value={duplicatePort} onChange={(event) => setDuplicatePort(event.target.value)} type="number" min="1" max="65535" /></label> : <p className="modal-note">{language === "es" ? "El origen no publica puertos; el duplicado tampoco publicará uno." : "The source publishes no ports, so the duplicate will not publish one."}</p>}
             <CustomSelect icon="layers" label={language === "es" ? "Red Docker" : "Docker network"} value={duplicateNetworkId} onChange={setDuplicateNetworkId} options={[{ value: "preserve", label: duplicateService.networks.length ? `${language === "es" ? "Conservar" : "Keep"}: ${duplicateService.networks.join(", ")}` : (language === "es" ? "Conservar configuración actual" : "Keep current configuration") }, ...networks.map((network) => ({ value: network.Id, label: network.Name }))]} />
-            <CustomSelect icon="refresh" label={language === "es" ? "Política de reinicio" : "Restart policy"} value={duplicateRestartPolicy} onChange={setDuplicateRestartPolicy} options={[{ value: "preserve", label: language === "es" ? "Conservar política del origen" : "Keep source policy" }, ...restartPolicyOptions]} />
+            <CustomSelect icon="refresh" label={t("policy")} value={duplicateRestartPolicy} onChange={setDuplicateRestartPolicy} options={[{ value: "preserve", label: t("preserve_policy"), icon: "check" }, ...restartPolicyOptions(language)]} />
             {duplicateRestartPolicy === "on-failure" ? <label className="modal-field retry-field"><span>{t("max_retries")}</span><input value={duplicateMaxRetries} onChange={(event) => setDuplicateMaxRetries(event.target.value)} type="number" min="0" max="1000000" /></label> : null}
           </div> : duplicateTab === "variables" ? <EnvironmentVariablesEditor value={duplicateVariables} onChange={setDuplicateVariables} /> : duplicateRuntimeSettings ? <RuntimeSettingsEditor value={duplicateRuntimeSettings} onChange={setDuplicateRuntimeSettings} /> : <p className="runtime-unavailable">{language === "es" ? "No se pudieron leer los ajustes del contenedor origen; se conservarán sin cambios." : "The source container settings could not be read; they will be left unchanged."}</p>}
           <p className="modal-note">{duplicateMode === "data" ? (language === "es" ? "El recurso destino debe ser nuevo. Vessel no sobrescribe datos existentes." : "The target resource must be new. Vessel never overwrites existing data.") : duplicateService.databaseTarget ? (language === "es" ? "El duplicado solo continuará cuando confirmes que compartirá el recurso de datos." : "The duplicate can continue only after you confirm it will share the data resource.") : (language === "es" ? "Se conservarán las variables, imagen y configuración del contenedor original." : "The source container's environment, image and configuration will be preserved.")}</p>
@@ -1113,7 +1176,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       </div> : null}
       {logService ? <div className="modal-backdrop" role="presentation"><section style={{ transform: `translate(${logsPosition.x}px, ${logsPosition.y}px)` }} className={`logs-modal${logsExpanded ? " logs-expanded" : ""}${draggingLogs ? " logs-dragging" : ""}`} role="dialog" aria-modal="true" aria-labelledby="logs-title"><div className="logs-head" onPointerDown={startDraggingLogs}><div><span className="modal-kicker">Vessel · Logs</span><h2 id="logs-title">{logService.name}</h2></div><div className="logs-actions"><button type="button" className="logs-expand" onClick={() => setLogsExpanded((value) => !value)}>{logsExpanded ? "Reducir" : "Expandir"}</button><button type="button" className="logs-close" onClick={() => setLogService(null)} aria-label="Cerrar logs">×</button></div></div><pre>{logService.logs || "Sin logs disponibles"}</pre></section></div> : null}
 
-      <footer><span>{syncState === "ok" ? `Sincronización activa${discoveredCount === null ? "" : ` · ${discoveredCount} contenedores detectados.`}` : "Backend Docker no disponible."}</span></footer>
+      <footer><span>{syncState === "ok" ? discoveredCount === null ? t("sync_active") : (discoveredCount === 1 ? t("sync_active_one") : t("sync_active_many").replace("{count}", String(discoveredCount))) : t("docker_backend_unavailable")}</span></footer>
     </main>
   );
 }

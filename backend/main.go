@@ -46,8 +46,8 @@ func newDockerClient() (*dockerClient, error) {
 	return &dockerClient{client: &http.Client{Transport: transport, Timeout: 30 * time.Second}, baseURL: "http://docker" + apiVersionPath}, nil
 }
 
-func (d *dockerClient) request(w http.ResponseWriter, method, path string, body io.Reader) {
-	req, err := http.NewRequestWithContext(context.Background(), method, d.baseURL+path, body)
+func (d *dockerClient) request(ctx context.Context, w http.ResponseWriter, method, path string, body io.Reader) {
+	req, err := http.NewRequestWithContext(ctx, method, d.baseURL+path, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -72,7 +72,7 @@ func (d *dockerClient) proxy(w http.ResponseWriter, r *http.Request, prefix stri
 	if path == "" {
 		path = "/"
 	}
-	d.request(w, r.Method, path, r.Body)
+	d.request(r.Context(), w, r.Method, path, r.Body)
 }
 
 func jsonResponse(w http.ResponseWriter, status int, value any) {
@@ -88,10 +88,21 @@ func health(w http.ResponseWriter, _ *http.Request) {
 func dockerHandler(d *dockerClient) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", health)
+	registerRemoteEngineHandlers(mux)
 	// The route is intentionally internal for now. Next.js remains the public
 	// UI/API while this Go service becomes the Docker control plane incrementally.
 	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
-		d.proxy(w, r, "/api/v1")
+		engineID := r.Header.Get("X-Vessel-Engine-ID")
+		if engineID == "" || engineID == "local" {
+			d.proxy(w, r, "/api/v1")
+			return
+		}
+		remote, ok := remoteEngineByID(engineID)
+		if !ok {
+			jsonResponse(w, http.StatusNotFound, map[string]string{"error": "Docker Engine not registered"})
+			return
+		}
+		remote.proxy(w, r, "/api/v1")
 	})
 	return mux
 }
