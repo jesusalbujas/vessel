@@ -9,7 +9,7 @@ function schedulerTick() {
   for (const task of listScheduledTasks()) {
     const runner = scheduledTaskRunnerStatus();
     if (runner.running >= runner.maxConcurrent) break;
-    if (!task.enabled || isScheduledTaskRunning(task.id) || !matchesCronSchedule(task.cronExpression, now, task.timezone)) continue;
+    if (!task.enabled || !task.scheduleEnabled || isScheduledTaskRunning(task.id) || !matchesCronSchedule(task.cronExpression, now, task.timezone)) continue;
     const minuteKey = String(Math.floor(now.getTime() / 60_000));
     if (!claimScheduledTaskMinute(task.id, minuteKey)) continue;
     try { startScheduledTaskRun(task.id, "schedule"); } catch { /* A later scheduled minute can retry capacity-limited work. */ }

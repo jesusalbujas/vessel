@@ -7,7 +7,7 @@ import styles from "./DeploymentCombobox.module.css";
 
 export type DeploymentComboOption = { value: string; label: string; detail?: string; icon?: ReactNode };
 
-export function DeploymentCombobox({ label, value, options, onChange, placeholder, searchPlaceholder, disabled = false, loading = false, allowCustom = false, es = true } : {
+export function DeploymentCombobox({ label, value, options, onChange, placeholder, searchPlaceholder, disabled = false, loading = false, allowCustom = false, customOptionLabel, compact = false, es = true } : {
   label: string;
   value: string;
   options: DeploymentComboOption[];
@@ -17,6 +17,8 @@ export function DeploymentCombobox({ label, value, options, onChange, placeholde
   disabled?: boolean;
   loading?: boolean;
   allowCustom?: boolean;
+  customOptionLabel?: (value: string) => string;
+  compact?: boolean;
   es?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -34,7 +36,7 @@ export function DeploymentCombobox({ label, value, options, onChange, placeholde
     return normalized ? options.filter((option) => `${option.label} ${option.detail ?? ""} ${option.value}`.toLocaleLowerCase().includes(normalized)) : options;
   }, [options, query]);
   const canUseCustom = allowCustom && query.trim().length > 0 && !options.some((option) => option.value === query.trim());
-  const entries = canUseCustom ? [...filtered, { value: query.trim(), label: es ? "Usar esta ruta" : "Use this path", detail: query.trim(), icon: <Search size={18} /> }] : filtered;
+  const entries = canUseCustom ? [...filtered, { value: query.trim(), label: customOptionLabel?.(query.trim()) ?? (es ? "Usar esta ruta" : "Use this path"), detail: query.trim(), icon: <Search size={18} /> }] : filtered;
 
   const updateMenuPosition = useCallback(() => {
     const rect = root.current?.getBoundingClientRect();
@@ -77,7 +79,7 @@ export function DeploymentCombobox({ label, value, options, onChange, placeholde
   function choose(next: string) { onChange(next); setQuery(""); close(); }
   function show() { updateMenuPosition(); setQuery(""); setActiveIndex(-1); setOpen(true); }
 
-  return <div className={styles.root} ref={root}>
+  return <div className={`${styles.root}${compact ? ` ${styles.compact}` : ""}`} ref={root}>
     <button ref={trigger} type="button" className={styles.trigger} aria-label={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} disabled={disabled || loading} onClick={() => open ? close() : show()} onKeyDown={(event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); show(); }
     }}>

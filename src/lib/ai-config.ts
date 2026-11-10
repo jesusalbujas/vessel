@@ -78,3 +78,8 @@ export function deleteAIConfiguration(id: string): boolean {
   ensureTables();
   return Number(controlPlaneDatabase().prepare("DELETE FROM vessel_ai_configurations WHERE id = ?").run(id).changes) > 0;
 }
+
+export function setAIConfigurationEnabled(id: string, enabled: boolean): boolean {
+  ensureTables();
+  return Number(controlPlaneDatabase().prepare("UPDATE vessel_ai_configurations SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, id).changes) > 0;
+}

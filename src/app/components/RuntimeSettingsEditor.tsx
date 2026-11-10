@@ -1,4 +1,5 @@
 "use client";
+import VesselSelect from "@/app/components/VesselSelect";
 
 import { useI18n } from "@/lib/i18n";
 import type { ContainerRuntimeSettings } from "@/lib/services";
@@ -33,10 +34,10 @@ export default function RuntimeSettingsEditor({ value, onChange }: { value: Cont
     <section className="runtime-settings-section">
       <div className="runtime-section-heading"><strong>{es ? "Registro de logs" : "Logging"}</strong><span>{es ? "Se conservarán las opciones no modificadas." : "Unchanged driver options are preserved."}</span></div>
       <div className="runtime-settings-grid">
-        <label className="modal-field"><span>{es ? "Driver" : "Driver"}</span><select value={value.logDriver} onChange={(event) => update({ logDriver: event.target.value })}>
+        <label className="modal-field"><span>{es ? "Driver" : "Driver"}</span><VesselSelect value={value.logDriver} onChange={(event) => update({ logDriver: event.target.value })}>
           {!logDrivers.includes(value.logDriver) ? <option value={value.logDriver}>{value.logDriver} · {es ? "actual" : "current"}</option> : null}
           {logDrivers.map((driver) => <option key={driver || "default"} value={driver}>{driver || (es ? "Predeterminado del Engine" : "Engine default")}</option>)}
-        </select></label>
+        </VesselSelect></label>
         <label className="modal-field"><span>max-size</span><input value={value.logOptions["max-size"] ?? ""} onChange={(event) => updateLogOption("max-size", event.target.value)} placeholder="100m" /></label>
         <label className="modal-field"><span>max-file</span><input value={value.logOptions["max-file"] ?? ""} onChange={(event) => updateLogOption("max-file", event.target.value)} inputMode="numeric" placeholder="3" /></label>
       </div>

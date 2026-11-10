@@ -25,12 +25,12 @@ async function backend(path: string, method: "GET" | "POST" | "DELETE", body?: u
   return payload;
 }
 
-function validInput(input: RemoteInput, privateKey: string): boolean {
+function validInput(input: RemoteInput, privateKey: string): input is RemoteInput & { name: string; host: string; port: number; username: string; fingerprint: string; knownHost: string } {
   return typeof input.name === "string" && input.name.trim().length > 0 && input.name.trim().length <= 80 &&
     typeof input.host === "string" && input.host.trim().length > 0 && input.host.trim().length <= 253 &&
     Number.isInteger(input.port) && Number(input.port) > 0 && Number(input.port) <= 65535 &&
     typeof input.username === "string" && /^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(input.username) &&
-    privateKey.length > 0 && privateKey.length <= 64_000 && privateKey.length <= 64_000 && privateKey.includes("PRIVATE KEY") &&
+    privateKey.length > 0 && privateKey.length <= 64_000 && privateKey.includes("PRIVATE KEY") &&
     typeof input.fingerprint === "string" && /^SHA256:[A-Za-z0-9+/]{20,50}=?$/.test(input.fingerprint) &&
     typeof input.knownHost === "string" && input.knownHost.length > 0 && input.knownHost.length <= 4096;
 }

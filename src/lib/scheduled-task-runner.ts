@@ -39,12 +39,34 @@ function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals) {
   try { process.kill(-child.pid, signal); } catch { child.kill(signal); }
 }
 
-export function startScheduledTaskRun(taskId: string, trigger: "manual" | "schedule" = "manual", startedBy?: string | null) {
+export function startScheduledTaskRun(taskId: string, trigger: "manual" | "schedule" = "manual", startedBy?: string | null, overrides: Record<string, string> = {}) {
   if (activeTasks.has(taskId)) throw new Error("This scheduled task is already running.");
   if (activeTasks.size >= maxConcurrentTasks) throw new Error("The scheduled task runner is at its concurrency limit.");
-  const task = scheduledTaskRuntimeData(taskId);
-  if (!task) throw new Error("Scheduled task not found.");
-  if (trigger === "schedule" && !task.enabled) throw new Error("This scheduled task is disabled.");
+  const storedTask = scheduledTaskRuntimeData(taskId);
+  if (!storedTask) throw new Error("Scheduled task not found.");
+  if (!storedTask.enabled) throw new Error("This scheduled task is disabled for execution.");
+  if (trigger === "schedule" && !storedTask.scheduleEnabled) throw new Error("Scheduling is disabled for this task.");
+  const allowedNames = new Set(storedTask.options.map((option) => option.name));
+  if (Object.keys(overrides).some((name) => !allowedNames.has(name))) throw new Error("A run parameter is not defined for this job.");
+  for (const option of storedTask.options) {
+    const value = overrides[option.name];
+    const defaultValue = option.storagePath ? storedTask.storageValues[option.storagePath] : storedTask.environment[option.name] ?? storedTask.environment[`VESSEL_${option.name.replace(/^VESSEL_/, "")}`];
+    if (option.storagePath && defaultValue === undefined) throw new Error(`Storage path ${option.storagePath} for job parameter ${option.name} was not found.`);
+    if (option.required && !defaultValue?.trim() && !value?.trim()) throw new Error(`Required job parameter ${option.name} needs a value.`);
+    if (option.allowedValues.length && (value ?? defaultValue) && !option.allowedValues.includes((value ?? defaultValue)!)) throw new Error(`Job parameter ${option.name} must match one of its allowed values.`);
+  }
+  const environment = { ...storedTask.environment, ...overrides };
+  for (const option of storedTask.options) {
+    if (!option.storagePath || overrides[option.name] !== undefined) continue;
+    const value = storedTask.storageValues[option.storagePath];
+    if (value !== undefined) environment[option.name] = value;
+  }
+  for (const [name, value] of Object.entries(overrides)) environment[`VESSEL_${name.replace(/^VESSEL_/, "")}`] = value;
+  for (const option of storedTask.options) {
+    const value = environment[option.name];
+    if (value !== undefined) environment[`VESSEL_${option.name.replace(/^VESSEL_/, "")}`] = value;
+  }
+  const task = { ...storedTask, environment };
   const run = createScheduledTaskRun(task, trigger, startedBy);
   activeTasks.add(taskId);
   void (async () => {

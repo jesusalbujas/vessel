@@ -177,10 +177,11 @@ function db(): DatabaseSync {
     );
     CREATE TABLE IF NOT EXISTS vessel_scheduled_tasks (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
+      group_name TEXT NOT NULL DEFAULT 'ALL',
       cron_expression TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'UTC',
       script TEXT NOT NULL, encrypted_environment TEXT NOT NULL DEFAULT '',
       environment_names TEXT NOT NULL DEFAULT '[]', timeout_seconds INTEGER NOT NULL DEFAULT 1800,
-      enabled INTEGER NOT NULL DEFAULT 1, last_scheduled_key TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1, schedule_enabled INTEGER NOT NULL DEFAULT 1, options_json TEXT NOT NULL DEFAULT '[]', last_scheduled_key TEXT,
       last_run_at TEXT, created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -253,6 +254,9 @@ function db(): DatabaseSync {
     database.exec("CREATE UNIQUE INDEX IF NOT EXISTS vessel_project_services_app_name ON vessel_project_services(project_id, app_name) WHERE app_name <> ''");
     const scheduledTaskColumns = database.prepare("PRAGMA table_info(vessel_scheduled_tasks)").all() as Array<{ name: string }>;
     if (!scheduledTaskColumns.some((column) => column.name === "project_id")) database.exec("ALTER TABLE vessel_scheduled_tasks ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'");
+    if (!scheduledTaskColumns.some((column) => column.name === "group_name")) database.exec("ALTER TABLE vessel_scheduled_tasks ADD COLUMN group_name TEXT NOT NULL DEFAULT 'ALL'");
+    if (!scheduledTaskColumns.some((column) => column.name === "schedule_enabled")) database.exec("ALTER TABLE vessel_scheduled_tasks ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 1");
+    if (!scheduledTaskColumns.some((column) => column.name === "options_json")) database.exec("ALTER TABLE vessel_scheduled_tasks ADD COLUMN options_json TEXT NOT NULL DEFAULT '[]'");
     database.exec("CREATE INDEX IF NOT EXISTS vessel_scheduled_tasks_project ON vessel_scheduled_tasks(project_id, enabled, name COLLATE NOCASE)");
     const scheduledRunColumns = database.prepare("PRAGMA table_info(vessel_scheduled_task_runs)").all() as Array<{ name: string }>;
     if (!scheduledRunColumns.some((column) => column.name === "started_by")) database.exec("ALTER TABLE vessel_scheduled_task_runs ADD COLUMN started_by TEXT");

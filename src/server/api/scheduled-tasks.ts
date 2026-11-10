@@ -72,17 +72,19 @@ export async function getScheduledTasks(request: Request) {
     const format = url.searchParams.get("export");
     if (format) {
       if (!["json", "yaml", "xml"].includes(format)) return response({ error: "Unsupported export format" }, 400);
-      const definition = { version: 1, projectId: task.projectId, name: task.name, description: task.description, schedule: { cron: task.cronExpression, timezone: task.timezone }, timeoutSeconds: task.timeoutSeconds, enabled: task.enabled, script: task.script, protectedVariableNames: task.environmentNames };
+      const definition = { version: 1, projectId: task.projectId, name: task.name, description: task.description, group: task.groupName, schedule: { cron: task.cronExpression, timezone: task.timezone, enabled: task.scheduleEnabled }, timeoutSeconds: task.timeoutSeconds, enabled: task.enabled, options: task.options, script: task.script, protectedVariableNames: task.environmentNames };
       const escapeXml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&apos;");
       const yamlScalar = (value: string) => /^[A-Za-z0-9_./:@+-]+$/.test(value) && !/^(true|false|null|yes|no|on|off)$/i.test(value) ? value : JSON.stringify(value);
       const yaml = [
         "version: 1",
         `projectId: ${yamlScalar(task.projectId)}`,
+        `group: ${yamlScalar(task.groupName)}`,
         `name: ${yamlScalar(task.name)}`,
         `description: ${yamlScalar(task.description)}`,
         "schedule:",
         `  cron: ${yamlScalar(task.cronExpression)}`,
         `  timezone: ${yamlScalar(task.timezone)}`,
+        `  enabled: ${task.scheduleEnabled}`,
         `timeoutSeconds: ${task.timeoutSeconds}`,
         `enabled: ${task.enabled}`,
         "script: |",
@@ -91,7 +93,7 @@ export async function getScheduledTasks(request: Request) {
         "",
       ].join("\n");
       const body = format === "xml"
-        ? `<?xml version="1.0" encoding="UTF-8"?>\n<job version="1"><projectId>${escapeXml(task.projectId)}</projectId><name>${escapeXml(task.name)}</name><description>${escapeXml(task.description)}</description><schedule><cron>${escapeXml(task.cronExpression)}</cron><timezone>${escapeXml(task.timezone)}</timezone></schedule><timeoutSeconds>${task.timeoutSeconds}</timeoutSeconds><enabled>${task.enabled}</enabled><script>${escapeXml(task.script)}</script><protectedVariableNames>${task.environmentNames.map((name) => `<name>${escapeXml(name)}</name>`).join("")}</protectedVariableNames></job>`
+        ? `<?xml version="1.0" encoding="UTF-8"?>\n<job version="1"><projectId>${escapeXml(task.projectId)}</projectId><group>${escapeXml(task.groupName)}</group><name>${escapeXml(task.name)}</name><description>${escapeXml(task.description)}</description><schedule enabled="${task.scheduleEnabled}"><cron>${escapeXml(task.cronExpression)}</cron><timezone>${escapeXml(task.timezone)}</timezone></schedule><timeoutSeconds>${task.timeoutSeconds}</timeoutSeconds><enabled>${task.enabled}</enabled><script>${escapeXml(task.script)}</script><protectedVariableNames>${task.environmentNames.map((name) => `<name>${escapeXml(name)}</name>`).join("")}</protectedVariableNames></job>`
         : format === "yaml" ? yaml : JSON.stringify(definition, null, 2);
       return new Response(body, { headers: { "Content-Type": format === "xml" ? "application/xml; charset=utf-8" : format === "yaml" ? "application/yaml; charset=utf-8" : "application/json; charset=utf-8", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`${task.name}.${format}`)}`, "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
     }
@@ -148,8 +150,22 @@ export async function postScheduledTasks(request: Request) {
       if (id) {
         const existing = scheduledTaskEnvironmentData(id);
         if (!existing) return response({ error: "Scheduled task not found" }, 404);
-        environment = { ...existing, ...input.environment };
+        environment = { ...existing };
+        for (const [name, value] of Object.entries(input.environment)) {
+          if (value !== "" || !Object.prototype.hasOwnProperty.call(existing, name)) environment[name] = value;
+        }
         for (const key of input.removedEnvironmentNames) delete environment[key];
+      }
+      for (const option of input.options) {
+        if (option.inputType === "password") {
+          delete environment[option.name];
+          delete environment[`VESSEL_${option.name.replace(/^VESSEL_/, "")}`];
+          if (option.storagePath) continue;
+          if (option.required) continue;
+        }
+        const value = environment[option.name] ?? environment[`VESSEL_${option.name.replace(/^VESSEL_/, "")}`];
+        if (option.required && !value?.trim()) return response({ error: `Required job parameter ${option.name} needs a value.` }, 400);
+        if (option.allowedValues.length && value && !option.allowedValues.includes(value)) return response({ error: `Job parameter ${option.name} must match one of its allowed values.` }, 400);
       }
       const { removedEnvironmentNames: _removedEnvironmentNames, ...taskInput } = input;
       const task = saveScheduledTask({ ...taskInput, environment, id, createdBy: user.id });
@@ -169,7 +185,10 @@ export async function postScheduledTasks(request: Request) {
       return response({ error: "Scheduled task run not found" }, 404);
     }
     if (body.action === "run" && typeof body.id === "string") {
-      return response({ data: startScheduledTaskRun(body.id, "manual", user.id) }, 202);
+      const rawParameters = body.parameters && typeof body.parameters === "object" && !Array.isArray(body.parameters) ? body.parameters as Record<string, unknown> : {};
+      if (Object.keys(rawParameters).length > 100 || Object.values(rawParameters).some((value) => typeof value !== "string" || value.length > 16_384 || value.includes("\0"))) return response({ error: "A run parameter value is invalid." }, 400);
+      const overrides = rawParameters as Record<string, string>;
+      return response({ data: startScheduledTaskRun(body.id, "manual", user.id, overrides) }, 202);
     }
     return response({ error: "Unsupported scheduled task action" }, 400);
   } catch (error) {

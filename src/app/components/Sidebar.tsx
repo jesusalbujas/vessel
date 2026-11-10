@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Boxes, CalendarClock, ChevronUp, Container, Database, FolderKanban, GitBranch, Home, Images, KeyRound, LogIn, LogOut, Mail, Network, PanelLeftClose, PanelLeftOpen, Server, Settings2, ShieldCheck, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Boxes, CalendarClock, ChevronUp, Container, Database, FolderKanban, GitBranch, Home, Images, KeyRound, LogIn, LogOut, Mail, Network, PanelLeftClose, PanelLeftOpen, Server, Settings2, ShieldCheck, Sparkles, UserRound, Users, type LucideIcon } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { VesselMark } from "./VesselMark";
 import { UserAvatar } from "./UserAvatar";
@@ -13,7 +13,7 @@ const sections: Array<{ en: string; es: string; items: Array<[string, LucideIcon
   { en: "WORKSPACE", es: "ESPACIO DE TRABAJO", items: [["/", Home, "Overview", "Resumen"], ["/projects", FolderKanban, "Projects", "Proyectos"], ["/compose", Boxes, "Compose projects", "Proyectos Compose"]] },
   { en: "DOCKER RESOURCES", es: "RECURSOS DOCKER", items: [["/containers", Container, "Containers", "Contenedores"], ["/images", Images, "Images", "Imágenes"], ["/volumes", Database, "Volumes", "Volúmenes"], ["/networks", Network, "Networks", "Redes"]] },
   { en: "AUTOMATION", es: "AUTOMATIZACIÓN", items: [["/jobs", CalendarClock, "Vessel Run", "Vessel Run"]] },
-  { en: "ADMINISTRATION", es: "ADMINISTRACIÓN", items: [["/servers", Server, "Servers", "Servidores"], ["/ssh-keys", KeyRound, "SSH keys", "Claves SSH"], ["/registries", Container, "Registries", "Registries"], ["/git-providers", GitBranch, "Git providers", "Proveedores Git"], ["/users", Users, "Users", "Usuarios"], ["/sessions", ShieldCheck, "Sessions", "Sesiones"], ["/settings", Settings2, "Settings", "Configuración"]] },
+  { en: "ADMINISTRATION", es: "ADMINISTRACIÓN", items: [["/servers", Server, "Servers", "Servidores"], ["/ssh-keys", KeyRound, "SSH keys", "Claves SSH"], ["/registries", Container, "Registries", "Registries"], ["/git-providers", GitBranch, "Git providers", "Proveedores Git"], ["/users", Users, "Users", "Usuarios"], ["/sessions", ShieldCheck, "Sessions", "Sesiones"], ["/settings/ai", Sparkles, "AI", "IA"], ["/settings", Settings2, "Settings", "Configuración"]] },
 ];
 
 export function Sidebar() {
@@ -90,7 +90,7 @@ export function Sidebar() {
           if (!visibleItems.length) return null;
           return <div className="sidebar-nav-section" key={section.en}><span className="sidebar-section-title">{language === "es" ? section.es : section.en}</span>{visibleItems.map(([href, Icon, en, es]) => {
           const label = language === "es" ? es : en;
-          const active = pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
+          const active = pathname === href || (href !== "/" && pathname.startsWith(`${href}/`) && !(href === "/settings" && pathname.startsWith("/settings/ai")));
           return <Link className={active ? "active" : ""} href={href} key={href} title={collapsed ? label : undefined} aria-current={active ? "page" : undefined}>
             <Icon className="sidebar-icon" size={22} strokeWidth={1.8} />
             <span className="sidebar-label">{label}</span>

@@ -17,7 +17,7 @@ export function createScheduledTaskRun(task: Pick<ScheduledTaskRecord, "id" | "n
   controlPlaneDatabase().prepare(`DELETE FROM vessel_scheduled_task_runs WHERE id IN (
     SELECT id FROM vessel_scheduled_task_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT -1 OFFSET 200
   )`).run(task.id);
-  return { id, taskId: task.id, taskName: task.name, trigger, status: "running", exitCode: null, output: "", error: null, startedAt, finishedAt: null };
+  return { id, taskId: task.id, taskName: task.name, trigger, status: "running", exitCode: null, output: "", error: null, startedAt, finishedAt: null, startedBy: null };
 }
 
 export function appendScheduledTaskRunOutput(id: string, output: string) {
@@ -31,12 +31,12 @@ export function finishScheduledTaskRun(id: string, exitCode: number | null, erro
 
 export function listScheduledTaskRuns(taskId?: string, limit = 50): ScheduledTaskRun[] {
   const max = Math.max(1, Math.min(200, Math.trunc(limit)));
-  const select = `SELECT id, task_id AS taskId, task_name AS taskName, trigger_kind AS trigger,
-    status, exit_code AS exitCode, output, error, started_at AS startedAt, finished_at AS finishedAt
-    FROM vessel_scheduled_task_runs`;
+  const select = `SELECT r.id, r.task_id AS taskId, r.task_name AS taskName, r.trigger_kind AS trigger,
+    r.status, r.exit_code AS exitCode, r.output, r.error, r.started_at AS startedAt, r.finished_at AS finishedAt,
+    u.username AS startedBy FROM vessel_scheduled_task_runs r LEFT JOIN vessel_users u ON u.id = r.started_by`;
   return (taskId
-    ? controlPlaneDatabase().prepare(`${select} WHERE task_id = ? ORDER BY started_at DESC LIMIT ?`).all(taskId, max)
-    : controlPlaneDatabase().prepare(`${select} ORDER BY started_at DESC LIMIT ?`).all(max)) as ScheduledTaskRun[];
+    ? controlPlaneDatabase().prepare(`${select} WHERE r.task_id = ? ORDER BY r.started_at DESC LIMIT ?`).all(taskId, max)
+    : controlPlaneDatabase().prepare(`${select} ORDER BY r.started_at DESC LIMIT ?`).all(max)) as ScheduledTaskRun[];
 }
 
 export function listScheduledTaskActivity(limit = 2000): ScheduledTaskActivity[] {
@@ -54,9 +54,9 @@ export function listScheduledTaskActivity(limit = 2000): ScheduledTaskActivity[]
 }
 
 export function getScheduledTaskRun(id: string): ScheduledTaskRun | null {
-  const select = `SELECT id, task_id AS taskId, task_name AS taskName, trigger_kind AS trigger,
-    status, exit_code AS exitCode, output, error, started_at AS startedAt, finished_at AS finishedAt
-    FROM vessel_scheduled_task_runs WHERE id = ?`;
+  const select = `SELECT r.id, r.task_id AS taskId, r.task_name AS taskName, r.trigger_kind AS trigger,
+    r.status, r.exit_code AS exitCode, r.output, r.error, r.started_at AS startedAt, r.finished_at AS finishedAt,
+    u.username AS startedBy FROM vessel_scheduled_task_runs r LEFT JOIN vessel_users u ON u.id = r.started_by WHERE r.id = ?`;
   return controlPlaneDatabase().prepare(select).get(id) as ScheduledTaskRun | null;
 }
 

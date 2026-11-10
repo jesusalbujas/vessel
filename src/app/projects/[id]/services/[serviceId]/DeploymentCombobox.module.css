@@ -1,4 +1,10 @@
 .root { position: relative; min-width: 0; width: 100%; }
+.compact .trigger { min-height: 40px; padding: 7px 11px; border-radius: 9px; }
+.compact .copy { gap: 0; }
+.compact .copy strong { font-size: 13px; line-height: 1.4; }
+.compact .value .copy small { display: none; }
+.compact .icon { flex-basis: 24px; width: 24px; height: 24px; border-radius: 6px; }
+.compact .icon > svg, .compact .icon > img { width: 15px; height: 15px; }
 
 .trigger {
   display: flex;

@@ -3,18 +3,20 @@ import { controlPlaneDatabase, decryptControlPlaneSecret, encryptControlPlaneSec
 import { scheduledJobGlobalKeyValues, scheduledJobProjectKeyValues } from "@/lib/scheduled-job-project-store";
 import type { ScheduledTaskRecord, ScheduledTaskRuntime } from "@/lib/scheduled-task-types";
 
-type ScheduledTaskRow = Omit<ScheduledTaskRecord, "enabled" | "environmentNames"> & {
-  enabled: number; environmentNames: string; encryptedEnvironment: string;
+type ScheduledTaskRow = Omit<ScheduledTaskRecord, "enabled" | "scheduleEnabled" | "environmentNames" | "options"> & {
+  enabled: number; scheduleEnabled: number; environmentNames: string; encryptedEnvironment: string; options: string;
 };
 const scheduledTaskSelect = `SELECT id, name, description, cron_expression AS cronExpression,
   timezone, script, environment_names AS environmentNames, timeout_seconds AS timeoutSeconds,
-  enabled, last_run_at AS lastRunAt, created_at AS createdAt, updated_at AS updatedAt,
+  enabled, schedule_enabled AS scheduleEnabled, group_name AS groupName, options_json AS options, last_run_at AS lastRunAt, created_at AS createdAt, updated_at AS updatedAt,
   project_id AS projectId, encrypted_environment AS encryptedEnvironment FROM vessel_scheduled_tasks`;
 
 function mapScheduledTask(row: ScheduledTaskRow): ScheduledTaskRecord {
   let environmentNames: string[] = [];
   try { const value = JSON.parse(row.environmentNames); if (Array.isArray(value)) environmentNames = value.filter((name): name is string => typeof name === "string"); } catch { /* Ignore malformed legacy metadata. */ }
-  return { id: row.id, projectId: row.projectId, name: row.name, description: row.description, cronExpression: row.cronExpression, timezone: row.timezone, script: row.script, environmentNames, timeoutSeconds: row.timeoutSeconds, enabled: Boolean(row.enabled), lastRunAt: row.lastRunAt, createdAt: row.createdAt, updatedAt: row.updatedAt };
+  let options: ScheduledTaskRecord["options"] = [];
+  try { const value = JSON.parse(row.options); if (Array.isArray(value)) options = value; } catch { /* Keep legacy tasks without option metadata usable. */ }
+  return { id: row.id, projectId: row.projectId, name: row.name, description: row.description, groupName: row.groupName || "ALL", cronExpression: row.cronExpression, timezone: row.timezone, script: row.script, environmentNames, options, timeoutSeconds: row.timeoutSeconds, enabled: Boolean(row.enabled), scheduleEnabled: Boolean(row.scheduleEnabled), lastRunAt: row.lastRunAt, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
 export function listScheduledTasks(): ScheduledTaskRecord[] {
@@ -34,7 +36,10 @@ export function scheduledTaskRuntimeData(id: string): ScheduledTaskRuntime | nul
     for (const [name, value] of Object.entries(source)) environment[`VESSEL_${name.replace(/^VESSEL_/, "")}`] = value;
   }
   const project = controlPlaneDatabase().prepare("SELECT name FROM vessel_job_projects WHERE id = ?").get(task.projectId) as { name: string } | undefined;
-  return { ...task, projectName: project?.name ?? task.projectId, environment };
+  const storageValues: Record<string, string> = {};
+  for (const [name, value] of Object.entries(globalValues)) storageValues[`global:${name}`] = value;
+  for (const [name, value] of Object.entries(projectValues)) storageValues[`project:${name}`] = value;
+  return { ...task, projectName: project?.name ?? task.projectId, environment, storageValues };
 }
 
 export function scheduledTaskEnvironmentData(id: string): Record<string, string> | null {
@@ -44,24 +49,24 @@ export function scheduledTaskEnvironmentData(id: string): Record<string, string>
 }
 
 export function saveScheduledTask(input: {
-  id?: string; name: string; description: string; cronExpression: string; timezone: string;
-  script: string; environment: Record<string, string>; timeoutSeconds: number; createdBy: string; projectId?: string;
+  id?: string; name: string; description: string; groupName: string; cronExpression: string; timezone: string;
+  script: string; environment: Record<string, string>; options: ScheduledTaskRecord["options"]; timeoutSeconds: number; enabled: boolean; scheduleEnabled: boolean; createdBy: string; projectId?: string;
 }) {
   const name = input.name.trim();
+  const groupName = input.groupName.trim() || "ALL";
   if (!controlPlaneDatabase().prepare("SELECT 1 FROM vessel_job_projects WHERE id = ?").get(input.projectId ?? "default")) throw new Error("Scheduled task project not found");
   const encryptedEnvironment = encryptControlPlaneSecret(JSON.stringify(input.environment));
   const environmentNames = JSON.stringify(Object.keys(input.environment).sort());
   const id = input.id || randomUUID();
   if (input.id) {
-    const result = controlPlaneDatabase().prepare(`UPDATE vessel_scheduled_tasks SET name = ?, description = ?, cron_expression = ?, timezone = ?, script = ?,
-      encrypted_environment = ?, environment_names = ?, timeout_seconds = ?, project_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(name, input.description.trim(), input.cronExpression.trim(), input.timezone, input.script, encryptedEnvironment, environmentNames, input.timeoutSeconds, input.projectId ?? "default", id);
+    const result = controlPlaneDatabase().prepare(`UPDATE vessel_scheduled_tasks SET name = ?, description = ?, group_name = ?, cron_expression = ?, timezone = ?, script = ?,
+      encrypted_environment = ?, environment_names = ?, options_json = ?, timeout_seconds = ?, enabled = ?, schedule_enabled = ?, project_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(name, input.description.trim(), groupName, input.cronExpression.trim(), input.timezone, input.script, encryptedEnvironment, environmentNames, JSON.stringify(input.options), input.timeoutSeconds, input.enabled ? 1 : 0, input.scheduleEnabled ? 1 : 0, input.projectId ?? "default", id);
     if (!Number(result.changes)) throw new Error("Scheduled task not found");
   } else {
     controlPlaneDatabase().prepare(`INSERT INTO vessel_scheduled_tasks
-      (id, name, description, cron_expression, timezone, script, encrypted_environment, environment_names, timeout_seconds, created_by, project_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, name, input.description.trim(), input.cronExpression.trim(), input.timezone, input.script, encryptedEnvironment, environmentNames, input.timeoutSeconds, input.createdBy, input.projectId ?? "default");
+      (id, name, description, group_name, cron_expression, timezone, script, encrypted_environment, environment_names, options_json, timeout_seconds, enabled, schedule_enabled, created_by, project_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, name, input.description.trim(), groupName, input.cronExpression.trim(), input.timezone, input.script, encryptedEnvironment, environmentNames, JSON.stringify(input.options), input.timeoutSeconds, input.enabled ? 1 : 0, input.scheduleEnabled ? 1 : 0, input.createdBy, input.projectId ?? "default");
   }
   return getScheduledTask(id)!;
 }
@@ -81,10 +86,10 @@ export function duplicateScheduledTask(id: string, createdBy: string): Scheduled
   while (table.prepare("SELECT 1 FROM vessel_scheduled_tasks WHERE name = ? COLLATE NOCASE").get(name)) name = `${baseName} ${suffix++}`;
   const newId = randomUUID();
   table.prepare(`INSERT INTO vessel_scheduled_tasks
-    (id, name, description, cron_expression, timezone, script, encrypted_environment, environment_names,
-     timeout_seconds, enabled, created_by, project_id)
-    SELECT ?, ?, description, cron_expression, timezone, script, encrypted_environment, environment_names,
-     timeout_seconds, 0, ?, project_id FROM vessel_scheduled_tasks WHERE id = ?`)
+    (id, name, description, group_name, cron_expression, timezone, script, encrypted_environment, environment_names, options_json,
+     timeout_seconds, enabled, schedule_enabled, created_by, project_id)
+    SELECT ?, ?, description, group_name, cron_expression, timezone, script, encrypted_environment, environment_names, options_json,
+     timeout_seconds, 0, 0, ?, project_id FROM vessel_scheduled_tasks WHERE id = ?`)
     .run(newId, name, createdBy, id);
   return getScheduledTask(newId);
 }
