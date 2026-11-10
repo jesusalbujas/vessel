@@ -1,2 +1,3 @@
 import { getMetrics } from "@/server/api/metrics";
-export const GET = getMetrics;
+import { withDockerEngine } from "@/lib/docker/request-context";
+export const GET = withDockerEngine(getMetrics);

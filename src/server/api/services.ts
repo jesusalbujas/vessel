@@ -220,12 +220,24 @@ export async function getServices(request: Request) {
   try {
     const containers = (await listDockerContainers()).filter((container) => !isPortalContainer(container));
     const host = serviceHost(request);
-    const details = await Promise.all(containers.map((container) => inspectDockerContainer(container.Id).catch(() => null)));
+    // The workspace overview only needs container list metadata (state, ports,
+    // image and Compose labels). Inspecting every container is expensive on
+    // SSH-backed Engines because each inspection is a separate Docker API hop.
+    const summaryOnly = new URL(request.url).searchParams.get("summary") === "1";
+    const inspectionResults: PromiseSettledResult<Awaited<ReturnType<typeof inspectDockerContainer>>>[] = [];
+    if (!summaryOnly) {
+      for (let offset = 0; offset < containers.length; offset += 4) {
+        const batch = containers.slice(offset, offset + 4);
+        inspectionResults.push(...await Promise.allSettled(batch.map((container) => inspectDockerContainer(container.Id))));
+      }
+    }
+    const details = summaryOnly ? containers.map(() => null) : inspectionResults.map((result) => result.status === "fulfilled" ? result.value : null);
+    const inspectionFailures = inspectionResults.filter((result) => result.status === "rejected").length;
     const services = containers.map((container, index) => {
       const name = (container.Names?.[0] ?? container.Id.slice(0, 12)).replace(/^\//, "");
       const composeProject = container.Labels?.["com.docker.compose.project"] ?? null;
       const linkedProjectId = vesselProjectIdForResource("container", name) ?? (composeProject ? vesselProjectIdForResource("compose", composeProject) : null);
-      const environmentVariables = details[index]?.Config?.Env ?? [];
+      const environmentVariables = details[index]?.Config?.Env;
       const port = publicPort(container);
       const status = statusFor(container);
       return {
@@ -240,13 +252,14 @@ export async function getServices(request: Request) {
         source: "vessel" as const,
         category: categoryFor(container),
         statusSince: statusSince(container),
-        databaseTarget: detectDataSource(details[index]?.Config?.Env)?.resourceName ?? dataResourceName(details[index]?.Config?.Env),
-        dataCloneEngine: detectDataSource(details[index]?.Config?.Env)?.engine ?? null,
+        databaseTarget: detectDataSource(environmentVariables)?.resourceName ?? dataResourceName(environmentVariables),
+        dataCloneEngine: detectDataSource(environmentVariables)?.engine ?? null,
         ready: readyFor(container),
         image: container.Image ?? null,
         imageVersion: imageVersion(container.Image ?? null),
         networks: Object.keys(details[index]?.NetworkSettings?.Networks ?? {}),
-        ...(user.role === "viewer" ? {} : { environmentVariables: linkedProjectId ? maskVesselProjectEnvironmentReferences(linkedProjectId, environmentVariables) : environmentVariables }),
+        ...(user.role === "viewer" || !environmentVariables ? {} : { environmentVariables: linkedProjectId ? maskVesselProjectEnvironmentReferences(linkedProjectId, environmentVariables) : environmentVariables }),
+        ...(details[index] ? {} : { detailsUnavailable: true }),
         restartPolicy: restartPolicyFor(details[index]),
         ...(user.role === "viewer" ? {} : { runtimeSettings: details[index] ? runtimeSettingsFor(details[index]) : undefined }),
         composeProject,
@@ -257,9 +270,10 @@ export async function getServices(request: Request) {
         managedBy: container.Labels?.["com.docker.compose.project"] ? "Compose" : "Docker Engine",
       };
     });
-    return NextResponse.json({ data: services, meta: { source: "vessel", dockerSync: "ok", discovered: containers.length, host } }, { headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
-  } catch {
-    return NextResponse.json({ data: [], meta: { source: "vessel", dockerSync: "error", discovered: 0, host: process.env.PUBLIC_SERVICE_HOST ?? "" } }, { status: 502, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
+    return NextResponse.json({ data: services, meta: { source: "vessel", dockerSync: inspectionFailures ? "partial" : "ok", discovered: containers.length, inspectionFailures, summaryOnly, host } }, { headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 300) : "Error desconocido";
+    return NextResponse.json({ error: `No fue posible consultar los contenedores Docker: ${message}` }, { status: 502, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
   }
 }
 

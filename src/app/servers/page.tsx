@@ -3,7 +3,7 @@ import VesselSelect from "@/app/components/VesselSelect";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { CircleAlert, CircleCheck, Fingerprint, KeyRound, LoaderCircle, Plus, RefreshCw, Server, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, CircleCheck, Fingerprint, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Server, ShieldCheck, Trash2, X } from "lucide-react";
 import { notifyVessel } from "@/app/components/ToastNotice";
 import { useI18n } from "@/lib/i18n";
 
@@ -38,6 +38,11 @@ export default function ServersPage() {
   const [testingId, setTestingId] = useState("");
   const [removeId, setRemoveId] = useState("");
   const [error, setError] = useState("");
+  const [localEngineName, setLocalEngineName] = useState("Engine Local");
+  const [localEngineNameDraft, setLocalEngineNameDraft] = useState("Engine Local");
+  const [editingLocalEngineName, setEditingLocalEngineName] = useState(false);
+  const [savingLocalEngineName, setSavingLocalEngineName] = useState(false);
+  const [canManage, setCanManage] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -46,6 +51,14 @@ export default function ServersPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? (es ? "No se pudieron cargar los servidores." : "Could not load servers."));
       setServers(payload.data ?? []);
+      const enginesResponse = await fetch("/api/engines", { cache: "no-store" });
+      const enginesPayload = await enginesResponse.json();
+      if (enginesResponse.ok) {
+        const name = typeof enginesPayload.localEngineName === "string" ? enginesPayload.localEngineName : "Engine Local";
+        setLocalEngineName(name);
+        setLocalEngineNameDraft(name);
+        setCanManage(enginesPayload.canManage === true);
+      }
       const keysResponse = await fetch("/api/ssh-keys", { cache: "no-store" });
       const keysPayload = await keysResponse.json();
       if (keysResponse.ok) setSSHKeys(keysPayload.data ?? []);
@@ -55,6 +68,28 @@ export default function ServersPage() {
   }
 
   useEffect(() => { void load(); }, []);
+
+  async function saveLocalEngineName() {
+    setSavingLocalEngineName(true);
+    try {
+      const response = await fetch("/api/engines", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ localEngineName: localEngineNameDraft }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? (es ? "No se pudo cambiar el nombre." : "Could not update the name."));
+      const name = payload.localEngineName as string;
+      setLocalEngineName(name);
+      setLocalEngineNameDraft(name);
+      setEditingLocalEngineName(false);
+      notifyVessel({ kind: "success", title: es ? "Nombre actualizado" : "Name updated" });
+    } catch (cause) {
+      notifyVessel({ kind: "error", title: cause instanceof Error ? cause.message : (es ? "No se pudo cambiar el nombre." : "Could not update the name.") });
+    } finally {
+      setSavingLocalEngineName(false);
+    }
+  }
 
   async function getFingerprint() {
     setFingerprinting(true); setError("");
@@ -109,7 +144,7 @@ export default function ServersPage() {
     <header className="module-header"><div><span className="module-kicker">VESSEL · DOCKER ENGINES</span><h1>{es ? "Servidores" : "Servers"}</h1><p>{es ? "Conecta y verifica Engines Docker independientes mediante SSH." : "Connect and verify independent Docker Engines over SSH."}</p></div><div className="remote-header-actions"><Link className="secondary-button" href="/ssh-keys"><KeyRound size={15} />{es ? "Claves SSH" : "SSH keys"}</Link><button className="primary-button" type="button" onClick={() => { setFormOpen((value) => !value); setError(""); }}><Plus size={16} />{es ? "Conectar servidor" : "Connect server"}</button></div></header>
     <nav className="remote-section-nav"><a className="active" href="/servers"><Server size={15} />{es ? "Servidores" : "Servers"}</a><a href="/ssh-keys"><KeyRound size={15} />{es ? "Claves SSH" : "SSH keys"}</a></nav>
 
-    <section className="remote-engine-local module-panel"><span className="remote-engine-icon"><Server size={22} /></span><div className="remote-engine-copy"><strong>{es ? "Engine local" : "Local Engine"}</strong><p>{es ? "El Docker Engine donde se ejecuta Vessel." : "The Docker Engine where Vessel is running."}</p></div><span className="remote-engine-status"><i />{es ? "Predeterminado" : "Default"}</span></section>
+    <section className="remote-engine-local module-panel"><span className="remote-engine-icon"><Server size={22} /></span><div className="remote-engine-copy">{editingLocalEngineName ? <label className="local-engine-name-edit"><span>{es ? "Nombre del Engine local" : "Local Engine name"}</span><input autoFocus maxLength={80} value={localEngineNameDraft} onChange={(event) => setLocalEngineNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveLocalEngineName(); if (event.key === "Escape") { setLocalEngineNameDraft(localEngineName); setEditingLocalEngineName(false); } }} /></label> : <strong>{localEngineName}</strong>}<p>{es ? "El Docker Engine donde se ejecuta Vessel." : "The Docker Engine where Vessel is running."}</p></div>{editingLocalEngineName ? <span className="local-engine-edit-actions"><button className="remote-icon-button" type="button" onClick={() => { setLocalEngineNameDraft(localEngineName); setEditingLocalEngineName(false); }} disabled={savingLocalEngineName} aria-label={es ? "Cancelar edición" : "Cancel editing"}><X size={16} /></button><button className="remote-icon-button" type="button" onClick={() => void saveLocalEngineName()} disabled={savingLocalEngineName || !localEngineNameDraft.trim()} aria-label={es ? "Guardar nombre" : "Save name"}>{savingLocalEngineName ? <LoaderCircle size={16} className="spinning" /> : <Check size={16} />}</button></span> : canManage ? <button className="remote-icon-button" type="button" onClick={() => { setLocalEngineNameDraft(localEngineName); setEditingLocalEngineName(true); }} aria-label={es ? "Editar nombre del Engine local" : "Edit local Engine name"} title={es ? "Editar nombre" : "Edit name"}><Pencil size={15} /></button> : null}<span className="remote-engine-status"><i />{es ? "Predeterminado" : "Default"}</span></section>
 
     {formOpen ? <section className="module-panel remote-server-form-panel"><div className="remote-form-heading"><div><h2><Server size={19} />{es ? "Añadir servidor remoto" : "Add remote server"}</h2><p>{es ? "La clave privada se cifra antes de guardarse y nunca vuelve a mostrarse." : "The private key is encrypted before storage and is never shown again."}</p></div><button type="button" className="remote-icon-button" onClick={() => { setFormOpen(false); setForm(emptyForm); setError(""); }} aria-label={es ? "Cerrar" : "Close"}><X size={18} /></button></div>
       <div className="remote-server-fields">

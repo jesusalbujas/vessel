@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { currentDockerEngineId, runWithDockerEngine } from "@/lib/docker/engine-context";
 
 export type CloneJobStep = "queued" | "dumping" | "creating_resource" | "restoring" | "pulling_image" | "creating_container" | "starting" | "completed" | "failed";
 export type CloneJob = {
@@ -18,6 +19,7 @@ export type CloneJob = {
 
 const store = new Map<string, CloneJob>();
 const retryTasks = new Map<string, () => CloneJob>();
+const jobEngines = new Map<string, string | null>();
 
 export function getCloneJobs(): CloneJob[] {
   return [...store.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
@@ -33,6 +35,7 @@ export function startOperationJob(kind: CloneJob["kind"], task: (update: (patch:
     currentItem: null, errors: 0, startedAt: new Date().toISOString(), finishedAt: null,
   };
   store.set(job.id, job);
+  jobEngines.set(job.id, currentDockerEngineId());
   if (retryTask) retryTasks.set(job.id, retryTask);
   const update = (patch: Partial<CloneJob>) => Object.assign(job, patch);
   void task(update).then((result) => {
@@ -44,7 +47,9 @@ export function startOperationJob(kind: CloneJob["kind"], task: (update: (patch:
 }
 
 export function retryOperationJob(id: string): CloneJob | null {
-  return retryTasks.get(id)?.() ?? null;
+  const retry = retryTasks.get(id);
+  if (!retry) return null;
+  return runWithDockerEngine(jobEngines.get(id) ?? null, retry);
 }
 
 export function startCloneJob(task: (update: (patch: Partial<CloneJob>) => void) => Promise<CloneJob["result"]>, sharedDataSource = false): CloneJob {

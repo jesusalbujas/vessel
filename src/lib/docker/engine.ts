@@ -2,12 +2,15 @@ import { spawn } from "node:child_process";
 import { dockerGet } from "./client";
 import type { DockerEngineInfo } from "./types";
 
+let composeVersionPromise: Promise<string | null> | null = null;
+
 export function getDockerEngineInfo(): Promise<DockerEngineInfo> {
   return dockerGet<DockerEngineInfo>("info");
 }
 
 export async function getDockerComposeVersion(): Promise<string | null> {
-  return new Promise((resolve) => {
+	if (composeVersionPromise) return composeVersionPromise;
+	composeVersionPromise = new Promise((resolve) => {
     const child = spawn("docker", ["compose", "version", "--short"], { stdio: ["ignore", "pipe", "ignore"] });
     let output = "";
     const timeout = setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 3000);
@@ -20,4 +23,5 @@ export async function getDockerComposeVersion(): Promise<string | null> {
       resolve(version ?? null);
     });
   });
+	return composeVersionPromise;
 }

@@ -75,6 +75,41 @@ func (d *dockerClient) proxy(w http.ResponseWriter, r *http.Request, prefix stri
 	d.request(r.Context(), w, r.Method, path, r.Body)
 }
 
+// overview retrieves the small set of Docker inventories used by the home
+// dashboard through one client. For SSH-backed Engines this keeps the same
+// authenticated SSH tunnel alive across all five Docker API reads.
+func (d *dockerClient) overview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	paths := []string{"/containers/json?all=1", "/images/json", "/volumes", "/networks", "/info"}
+	data := make([]json.RawMessage, 0, len(paths))
+	for _, path := range paths {
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, d.baseURL+path, nil)
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "could not prepare Docker overview request"})
+			return
+		}
+		response, err := d.client.Do(request)
+		if err != nil {
+			jsonResponse(w, http.StatusBadGateway, map[string]string{"error": "Docker overview request failed"})
+			return
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 32*1024*1024))
+		_ = response.Body.Close()
+		if readErr != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
+			jsonResponse(w, http.StatusBadGateway, map[string]string{"error": "Docker returned incomplete overview data"})
+			return
+		}
+		data = append(data, json.RawMessage(body))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]json.RawMessage{
+		"containers": data[0], "images": data[1], "volumes": data[2], "networks": data[3], "engine": data[4],
+	})
+}
+
 func jsonResponse(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -103,6 +138,19 @@ func dockerHandler(d *dockerClient) http.Handler {
 			return
 		}
 		remote.proxy(w, r, "/api/v1")
+	})
+	mux.HandleFunc("/api/v1/overview", func(w http.ResponseWriter, r *http.Request) {
+		engineID := r.Header.Get("X-Vessel-Engine-ID")
+		if engineID == "" || engineID == "local" {
+			d.overview(w, r)
+			return
+		}
+		remote, ok := remoteEngineByID(engineID)
+		if !ok {
+			jsonResponse(w, http.StatusNotFound, map[string]string{"error": "Docker Engine not registered"})
+			return
+		}
+		remote.overview(w, r)
 	})
 	return mux
 }

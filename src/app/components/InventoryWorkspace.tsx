@@ -6,7 +6,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, LayoutGrid, List, 
 import type { ContainerRuntimeSettings, RestartPolicy, Service, ServiceCategory, ServiceStatus } from "@/lib/services";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { notifyVessel } from "./ToastNotice";
-import { ResourceListLoadingSkeleton } from "./LoadingSkeletons";
+import { ContainerListLoadingSkeleton, ResourceListLoadingSkeleton } from "./LoadingSkeletons";
 import RuntimeSettingsEditor from "./RuntimeSettingsEditor";
 
 const initialCatalog: Service[] = [];
@@ -140,6 +140,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   const { language, t } = useI18n();
   const [authReady, setAuthReady] = useState(false);
   const [catalog, setCatalog] = useState(initialCatalog);
+  const [catalogLoading, setCatalogLoading] = useState(true);
   const [serviceHost, setServiceHost] = useState("");
   const [syncState, setSyncState] = useState("not-configured");
   const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
@@ -439,15 +440,20 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
 
   useEffect(() => {
     if (view === "containers") return;
+    let cancelled = false;
     const type = view;
     setResourceLoading(true);
     fetch(`/api/resources?type=${type}`, { cache: "no-store" }).then(async (response) => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "No fue posible leer Docker");
+      if (cancelled) return;
       if (type === "images") setImages(payload.data ?? []);
       else if (type === "volumes") setVolumes(payload.data ?? []);
       else { setNetworks(payload.data ?? []); setNetworkContainers(payload.containers ?? []); setSelectedNetworkId((current) => current || payload.data?.[0]?.Id || ""); setSelectedNetworkContainerId((current) => current || payload.containers?.[0]?.id || ""); }
-    }).catch((error) => setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible leer Docker" })).finally(() => setResourceLoading(false));
+    }).catch((error) => {
+      if (!cancelled) setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible leer Docker" });
+    }).finally(() => { if (!cancelled) setResourceLoading(false); });
+    return () => { cancelled = true; };
   }, [view, resourceRefreshIndex]);
 
   useEffect(() => {
@@ -647,6 +653,10 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   }
 
   function openContainerEditor(service: Service) {
+    if (service.detailsUnavailable) {
+      setToast({ kind: "error", message: language === "es" ? `No se puede editar ${service.name}: Docker no devolvió todos sus detalles. Actualiza la lista e inténtalo de nuevo.` : `Cannot edit ${service.name}: Docker did not return all container details. Refresh the list and try again.` });
+      return;
+    }
     setEditService(service);
     setEditName(service.name);
     setEditPort(service.port ? String(service.port) : "");
@@ -690,6 +700,10 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   }
 
   function openDuplicate(service: Service) {
+    if (service.detailsUnavailable) {
+      setToast({ kind: "error", message: language === "es" ? `No se puede duplicar ${service.name}: Docker no devolvió todos sus detalles. Actualiza la lista e inténtalo de nuevo.` : `Cannot duplicate ${service.name}: Docker did not return all container details. Refresh the list and try again.` });
+      return;
+    }
     const suggestedPort = nextAvailablePort(catalog.map((item) => item.port));
     setDuplicateService(service);
     setDuplicateName(`${service.name}_2`);
@@ -834,9 +848,34 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       setCatalog([]);
       setDiscoveredCount(0);
       setSyncState("error");
-    });
+    }).finally(() => setCatalogLoading(false));
     void refreshLabels();
   }, []);
+  useEffect(() => {
+    const handleEngineChange = () => {
+      setCatalog([]);
+      setCatalogLoading(true);
+      setSelectedServices(new Set());
+      setLabelsByContainer({});
+      setImages([]);
+      setVolumes([]);
+      setNetworks([]);
+      setNetworkContainers([]);
+      setSelectedNetworkId("");
+      setSelectedNetworkContainerId("");
+      setResourceRefreshIndex((value) => value + 1);
+      setResourceLoading(view !== "containers");
+      void refreshServices().catch((error) => {
+        setCatalog([]);
+        setDiscoveredCount(0);
+        setSyncState("error");
+        setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible leer Docker" });
+      }).finally(() => setCatalogLoading(false));
+      void refreshLabels();
+    };
+    window.addEventListener("vessel-engine-changed", handleEngineChange);
+    return () => window.removeEventListener("vessel-engine-changed", handleEngineChange);
+  }, [view]);
   useEffect(() => {
     try {
       const saved = JSON.parse(window.sessionStorage.getItem("dockpilot-dismissed-jobs") ?? "[]");
@@ -972,7 +1011,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     return <th key={column} aria-sort={direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}><button type="button" className={`container-table-sort${active ? " active" : ""}`} onClick={() => sortTableBy(column)}>{label}{direction === "asc" ? <ArrowUp size={13} /> : direction === "desc" ? <ArrowDown size={13} /> : <ArrowUpDown size={13} />}</button></th>;
   }
 
-  if (!authReady) return <main className="app-content inventory-workspace"><div className="inventory-loading">{language === "es" ? "Cargando recursos…" : "Loading resources…"}</div></main>;
+  if (!authReady) return <main className="app-content inventory-workspace"><ContainerListLoadingSkeleton layout="cards" label={language === "es" ? "Cargando contenedores" : "Loading containers"} /></main>;
 
   return (
     <main className="app-content inventory-workspace">
@@ -1025,7 +1064,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
 
       {view === "containers" ? <>
         <div className="container-display-toolbar"><span>{language === "es" ? "Vista" : "View"}</span><div className="container-view-switch" role="group" aria-label={language === "es" ? "Vista de contenedores" : "Container view"}><button type="button" className={containerLayout === "cards" ? "active" : ""} onClick={() => changeContainerLayout("cards")} aria-pressed={containerLayout === "cards"}><LayoutGrid size={16} />{language === "es" ? "Tarjetas" : "Cards"}</button><button type="button" className={containerLayout === "table" ? "active" : ""} onClick={() => changeContainerLayout("table")} aria-pressed={containerLayout === "table"}><List size={17} />{language === "es" ? "Tabla" : "Table"}</button></div>{containerLayout === "table" ? <div className="container-columns-control" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setContainerColumnsOpen(false); }}><button type="button" className={`container-columns-trigger${containerColumnsOpen ? " active" : ""}`} aria-expanded={containerColumnsOpen} onClick={() => setContainerColumnsOpen((current) => !current)}><SlidersHorizontal size={15} />{t("columns")}<ChevronDown size={14} /></button>{containerColumnsOpen ? <div className="container-columns-menu" role="group" aria-label={t("columns")}>{([{ key: "compose", label: "Compose" }, { key: "image", label: t("image") }, { key: "created", label: t("created") }, { key: "ip", label: t("ip_address") }, { key: "ports", label: t("published_ports") }, { key: "database", label: t("database") }, { key: "managedBy", label: t("managed_by") }] as Array<{ key: ContainerColumn; label: string }>).map((column) => <label key={column.key}><input type="checkbox" checked={visibleContainerColumns.has(column.key)} onChange={() => toggleContainerColumn(column.key)} /><span>{column.label}</span></label>)}</div> : null}</div> : null}</div>
-        {containerLayout === "table" ? <>
+        {catalogLoading ? <ContainerListLoadingSkeleton layout={containerLayout} label={language === "es" ? "Cargando contenedores" : "Loading containers"} /> : containerLayout === "table" ? <>
           {selectedServiceItems.length ? <div className="container-selection-toolbar" role="toolbar" aria-label={language === "es" ? "Acciones sobre selección" : "Selection actions"}>
             <span className="selection-count"><strong>{selectedServiceItems.length}</strong> {language === "es" ? "seleccionado(s)" : "selected"}</span>
             <button type="button" onClick={() => setBulkConfirmation("start")} disabled={!bulkStartable.length || bulkAction !== null}><Icon name="play" size={14} />{language === "es" ? `Iniciar (${bulkStartable.length})` : `Start (${bulkStartable.length})`}</button>
@@ -1047,7 +1086,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
           </tr></thead><tbody>{tableRows.map((service) => <Fragment key={service.id}>
             <tr className={selectedServices.has(service.id) ? "container-row-selected" : ""}>
               <td className="container-select-cell"><input type="checkbox" checked={selectedServices.has(service.id)} onChange={() => toggleServiceSelection(service.id)} disabled={bulkAction !== null} aria-label={`${language === "es" ? "Seleccionar" : "Select"} ${service.name}`} /></td>
-              <td><button type="button" className="container-name-link" onClick={() => openEdit(service)}>{service.name}</button><small>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]}</small></td>
+              <td><button type="button" className="container-name-link" onClick={() => openEdit(service)}>{service.name}</button><small>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]}{service.detailsUnavailable ? ` · ${language === "es" ? "detalles no disponibles" : "details unavailable"}` : ""}</small></td>
               <td><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span></td>
               {visibleContainerColumns.has("compose") ? <td>{service.composeProject ? <button type="button" className="container-compose-link" onClick={() => openComposeProject(service)} title={language === "es" ? "Abrir este proyecto Compose" : "Open this Compose project"}>▣ {service.composeProject}</button> : "—"}</td> : null}
               {visibleContainerColumns.has("image") ? <td className="container-table-image" title={service.image ?? undefined}>{service.image ?? "—"}</td> : null}
@@ -1062,7 +1101,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
           </Fragment>)}</tbody></table>{!filtered.length ? <div className="container-table-empty">{language === "es" ? "No hay contenedores para este filtro." : "No containers match this filter."}</div> : null}</div>
         </> : <section className="grid" aria-label={t("containers")}>
         {filtered.map((service) => <article className="service-card" key={service.id}>
-          <div className="service-card-head"><div className="service-title"><span className="service-icon"><Icon name={categoryIcon[service.category]} size={18} /></span><div><h3>{service.name}</h3><span className="muted" title={service.image ?? undefined}>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]} · {environmentLabel(service.environment, t)}{service.composeProject ? <button type="button" className="compose-badge compose-badge-button" onClick={() => openComposeProject(service)}>▣ Compose · {service.composeProject}</button> : null}</span></div></div><div className="service-head-actions"><div className="status-block"><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span><span className="status-since">{service.status === "unhealthy" ? t("unhealthy") : localizedStatusSince(service.statusSince, language)}</span></div><button className="edit-button" type="button" onClick={() => openEdit(service)} disabled={isServicePending(service.id)} title={t("edit")} aria-label={`${t("edit")} ${service.name}`}><Icon name="pencil" size={15} /></button></div></div>
+          <div className="service-card-head"><div className="service-title"><span className="service-icon"><Icon name={categoryIcon[service.category]} size={18} /></span><div><h3>{service.name}</h3><span className="muted" title={service.image ?? undefined}>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]} · {environmentLabel(service.environment, t)}{service.detailsUnavailable ? ` · ${language === "es" ? "detalles no disponibles" : "details unavailable"}` : null}{service.composeProject ? <button type="button" className="compose-badge compose-badge-button" onClick={() => openComposeProject(service)}>▣ Compose · {service.composeProject}</button> : null}</span></div></div><div className="service-head-actions"><div className="status-block"><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span><span className="status-since">{service.status === "unhealthy" ? t("unhealthy") : localizedStatusSince(service.statusSince, language)}</span></div><button className="edit-button" type="button" onClick={() => openEdit(service)} disabled={isServicePending(service.id)} title={t("edit")} aria-label={`${t("edit")} ${service.name}`}><Icon name="pencil" size={15} /></button></div></div>
           <div className="image-line"><span className="image-label"><Icon name="image" size={14} />{t("image")}</span><span className="image-name" title={service.image ?? undefined}>{service.image ?? "—"}</span><button className="copy-button" type="button" onClick={() => copyImage(service.image)} disabled={!service.image} title={t("copy_image")} aria-label={t("copy_image")}><Icon name="copy" size={15} /></button></div>
           {(labelsByContainer[service.id] ?? []).length ? <div className="service-tags"><Icon name="tag" size={13} />{(labelsByContainer[service.id] ?? []).map((label) => <span className="service-tag" key={label}>{label}</span>)}</div> : null}
           <dl><div><dt><span className="field-label"><Icon name="port" size={13} />{t("port")}</span></dt><dd>{service.port || "—"}</dd></div><div><dt><span className="field-label"><Icon name="tag" size={13} />{t("version")}</span></dt><dd title={service.imageVersion ?? undefined}>{service.imageVersion ?? t("no_tag")}</dd></div>{service.databaseTarget ? <div className="database-field"><dt><span className="field-label"><Icon name="database" size={13} />{t("database")}</span></dt><dd title={service.databaseTarget}>{service.databaseTarget}</dd></div> : null}<div className="network-field"><dt><span className="field-label"><Icon name="layers" size={13} />{t("networks")}</span></dt><dd title={service.networks.join(", ")}>{service.networks.length ? service.networks.join(", ") : t("no_network")}</dd></div></dl>

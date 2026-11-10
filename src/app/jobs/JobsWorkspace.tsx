@@ -34,6 +34,9 @@ export default function JobsWorkspace({ projectId }: { projectId?: string }) {
   const [availableKeys, setAvailableKeys] = useState<JobKey[]>([]);
   const [keyForm, setKeyForm] = useState({ name: "", value: "" });
   const [savingKey, setSavingKey] = useState(false);
+  const [creatingStorageKeyFor, setCreatingStorageKeyFor] = useState<string | null>(null);
+  const [storageKeyForm, setStorageKeyForm] = useState({ name: "", value: "", scope: "project" as "global" | "project" });
+  const [savingStorageKey, setSavingStorageKey] = useState(false);
   const [formTab, setFormTab] = useState<"details" | "workflow" | "schedule" | "notifications" | "other">("details");
   const [runs, setRuns] = useState<Run[]>([]);
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -207,6 +210,39 @@ export default function JobsWorkspace({ projectId }: { projectId?: string }) {
   function updateOption(name: string, update: Partial<Form["options"][number]>) {
     if (!form) return;
     setForm({ ...form, options: form.options.map((option) => option.name === name ? { ...option, ...update } : option) });
+  }
+
+  async function createStorageKey(optionName: string) {
+    if (!form || savingStorageKey) return;
+    setSavingStorageKey(true);
+    setError("");
+    try {
+      const name = storageKeyForm.name.trim();
+      const action = storageKeyForm.scope === "global" ? "globalKey.create" : "key.create";
+      const response = await fetch("/api/scheduled-tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, name, value: storageKeyForm.value, projectId: form.projectId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(localError(payload.error ?? "Could not create protected key.", es));
+
+      setAvailableKeys((current) => [...current, { name, updatedAt: new Date().toISOString(), scope: storageKeyForm.scope }]);
+      setForm((current) => current ? {
+        ...current,
+        options: current.options.map((option) => option.name === optionName
+          ? { ...option, storagePath: `${storageKeyForm.scope}:${name}` }
+          : option),
+      } : current);
+      setCreatingStorageKeyFor(null);
+      setStorageKeyForm({ name: "", value: "", scope: "project" });
+      await refresh(true);
+      notifyVessel({ kind: "success", title: es ? "Clave protegida creada y vinculada" : "Protected key created and linked", detail: name });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : es ? "No se pudo crear la clave protegida." : "Could not create protected key.");
+    } finally {
+      setSavingStorageKey(false);
+    }
   }
 
   async function taskAction(id: string, action: "run" | "toggle" | "delete" | "duplicate", enabled?: boolean, parameters?: Record<string, string>) {
@@ -400,7 +436,25 @@ export default function JobsWorkspace({ projectId }: { projectId?: string }) {
               {availableKeys.length ? <div className="scheduled-global-key-hint"><KeyRound size={15} /><span>{es ? "Las claves globales y del proyecto ya están disponibles en el script como" : "Global and project keys are already available in the script as"} <code>$VESSEL_{es ? "NOMBRE" : "NAME"}</code>{es ? ". No necesitas duplicarlas como parámetros." : ". You do not need to duplicate them as parameters."}</span></div> : null}
               {parseEnvironmentRows(form.environmentText).length ? <div className="scheduled-option-list">{parseEnvironmentRows(form.environmentText).map((option) => { const definition = form.options.find((item) => item.name === option.name) ?? { name: option.name, label: "", description: "", inputType: /(PASSWORD|TOKEN|SECRET|ACCESS_KEY)/i.test(option.name) ? "password" as const : "text" as const, required: false, hidden: false, allowedValues: [] }; return <article className="scheduled-option-card" key={option.lineIndex}>
                 <div className="scheduled-option-card-head"><span><ListTree size={15} />{es ? "Parámetro" : "Parameter"}</span><button type="button" className="scheduled-icon-button is-danger" onClick={() => removeOption(option.lineIndex)} aria-label={copy.remove} title={copy.remove}><X size={15} /></button></div>
-                <div className="scheduled-option-row"><label><span>{es ? "Nombre de variable" : "Variable name"}</span><input value={option.name} onChange={(event) => updateOptionLine(option.lineIndex, event.target.value, option.value)} placeholder="DB_NAME" autoCapitalize="off" spellCheck={false} /></label><label><span>{es ? "Etiqueta visible" : "Display label"}</span><input value={definition.label} onChange={(event) => updateOption(option.name, { label: event.target.value })} placeholder={es ? "Base de datos" : "Database name"} /></label><label><span>{es ? "Tipo de entrada" : "Input type"}</span><VesselSelect value={definition.inputType} onChange={(event) => updateOption(option.name, { inputType: event.target.value as "text" | "password" | "date" })}><option value="text"><span className="scheduled-input-type-option"><Type size={14} />{es ? "Texto" : "Text"}</span></option><option value="password"><span className="scheduled-input-type-option"><KeyRound size={14} />{es ? "Secreto" : "Secret"}</span></option><option value="date"><span className="scheduled-input-type-option"><CalendarDays size={14} />{es ? "Fecha" : "Date"}</span></option></VesselSelect></label>{definition.inputType !== "password" ? <label><span>{es ? "Valor predeterminado" : "Default value"}</span><input type={definition.inputType === "date" ? "date" : "text"} value={option.value} onChange={(event) => updateOptionLine(option.lineIndex, option.name, event.target.value)} placeholder={form.id ? (es ? "Vacío conserva el valor guardado" : "Leave blank to keep the saved value") : (es ? "Valor inicial opcional" : "Optional initial value")} autoComplete="off" /></label> : null}{definition.inputType === "password" ? <label className="scheduled-option-storage-path"><span>{es ? "Ruta de almacenamiento" : "Storage Path"}</span><VesselSelect aria-label={es ? "Seleccionar clave almacenada" : "Select stored key"} value={definition.storagePath ?? ""} onChange={(event) => updateOption(option.name, { storagePath: event.target.value || undefined })}><option value="">{es ? "Sin clave vinculada" : "No key linked"}</option>{availableKeys.map((key) => <option key={key.scope + ":" + key.name} value={key.scope + ":" + key.name}>{key.scope === "global" ? (es ? "Global" : "Global") + " · keys/" + key.name : (es ? "Proyecto" : "Project") + " · keys/" + (selectedProject?.name ?? "project") + "/" + key.name}</option>)}</VesselSelect><small>{es ? "Vincula una clave global o del proyecto. Sin clave vinculada, Vessel pedirá el secreto al ejecutar manualmente." : "Link a global or project key. Without a linked key, Vessel prompts for the secret when run manually."}</small></label> : null}<label className="scheduled-option-description"><span>{es ? "Descripción" : "Description"}</span><input value={definition.description} onChange={(event) => updateOption(option.name, { description: event.target.value })} placeholder={es ? "Explica para qué sirve este parámetro" : "Explain what this parameter is for"} /></label><label><span>{es ? "Valores permitidos · opcional" : "Allowed values · optional"}</span><input value={definition.allowedValues.join(", ")} onChange={(event) => updateOption(option.name, { allowedValues: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} placeholder={es ? "prod, test, staging" : "prod, test, staging"} /></label></div>
+                <div className="scheduled-option-row">
+                  <label><span>{es ? "Nombre de variable" : "Variable name"}</span><input value={option.name} onChange={(event) => updateOptionLine(option.lineIndex, event.target.value, option.value)} placeholder="DB_NAME" autoCapitalize="off" spellCheck={false} /></label>
+                  <label><span>{es ? "Etiqueta visible" : "Display label"}</span><input value={definition.label} onChange={(event) => updateOption(option.name, { label: event.target.value })} placeholder={es ? "Base de datos" : "Database name"} /></label>
+                  <label><span>{es ? "Tipo de entrada" : "Input type"}</span><VesselSelect value={definition.inputType} onChange={(event) => updateOption(option.name, { inputType: event.target.value as "text" | "password" | "date" })}><option value="text"><span className="scheduled-input-type-option"><Type size={14} />{es ? "Texto" : "Text"}</span></option><option value="password"><span className="scheduled-input-type-option"><KeyRound size={14} />{es ? "Secreto" : "Secret"}</span></option><option value="date"><span className="scheduled-input-type-option"><CalendarDays size={14} />{es ? "Fecha" : "Date"}</span></option></VesselSelect></label>
+                  {definition.inputType !== "password" ? <label><span>{es ? "Valor predeterminado" : "Default value"}</span><input type={definition.inputType === "date" ? "date" : "text"} value={option.value} onChange={(event) => updateOptionLine(option.lineIndex, option.name, event.target.value)} placeholder={form.id ? (es ? "Vacío conserva el valor guardado" : "Leave blank to keep the saved value") : (es ? "Valor inicial opcional" : "Optional initial value")} autoComplete="off" /></label> : null}
+                  {definition.inputType === "password" ? <div className="scheduled-option-storage-path">
+                    <label><span>{es ? "Ruta de almacenamiento" : "Storage Path"}</span><VesselSelect aria-label={es ? "Seleccionar clave almacenada" : "Select stored key"} value={definition.storagePath ?? ""} onChange={(event) => updateOption(option.name, { storagePath: event.target.value || undefined })}><option value="">{es ? "Sin clave vinculada" : "No key linked"}</option>{availableKeys.map((key) => <option key={key.scope + ":" + key.name} value={key.scope + ":" + key.name}>{key.scope === "global" ? "Global" + " · keys/" + key.name : (es ? "Proyecto" : "Project") + " · keys/" + (projects.find((project) => project.id === form.projectId)?.name ?? "project") + "/" + key.name}</option>)}</VesselSelect></label>
+                    <button type="button" className="scheduled-storage-key-create" onClick={() => { setCreatingStorageKeyFor(creatingStorageKeyFor === option.name ? null : option.name); setStorageKeyForm({ name: option.name, value: "", scope: "project" }); }}><Plus size={14} />{es ? "Crear clave y vincular" : "Create and link key"}</button>
+                    {creatingStorageKeyFor === option.name ? <div className="scheduled-storage-key-form">
+                      <label><span>{es ? "Alcance" : "Scope"}</span><VesselSelect value={storageKeyForm.scope} onChange={(event) => setStorageKeyForm({ ...storageKeyForm, scope: event.target.value as "global" | "project" })}><option value="project">{es ? "Proyecto" : "Project"} · {projects.find((project) => project.id === form.projectId)?.name ?? "project"}</option><option value="global">{es ? "Global" : "Global"}</option></VesselSelect></label>
+                      <label><span>{es ? "Nombre de la clave" : "Key name"}</span><input required maxLength={128} pattern="[A-Za-z_][A-Za-z0-9_]*" value={storageKeyForm.name} onChange={(event) => setStorageKeyForm({ ...storageKeyForm, name: event.target.value })} placeholder="S3_SECRET_KEY" autoCapitalize="off" /></label>
+                      <label><span>{es ? "Valor secreto" : "Secret value"}</span><input required maxLength={16384} type="password" autoComplete="new-password" value={storageKeyForm.value} onChange={(event) => setStorageKeyForm({ ...storageKeyForm, value: event.target.value })} /></label>
+                      <div className="scheduled-storage-key-actions"><button type="button" className="secondary-button" onClick={() => setCreatingStorageKeyFor(null)} disabled={savingStorageKey}>{es ? "Cancelar" : "Cancel"}</button><button type="button" className="primary-button" onClick={() => void createStorageKey(option.name)} disabled={savingStorageKey || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(storageKeyForm.name.trim()) || !storageKeyForm.value}>{savingStorageKey ? <LoaderCircle size={14} className="spinning" /> : <Save size={14} />}{savingStorageKey ? (es ? "Guardando…" : "Saving…") : (es ? "Guardar y vincular" : "Save and link")}</button></div>
+                    </div> : null}
+                    <small>{es ? "Vincula una clave global o del proyecto. Sin clave vinculada, Vessel pedirá el secreto al ejecutar manualmente." : "Link a global or project key. Without a linked key, Vessel prompts for the secret when run manually."}</small>
+                  </div> : null}
+                  <label className="scheduled-option-description"><span>{es ? "Descripción" : "Description"}</span><input value={definition.description} onChange={(event) => updateOption(option.name, { description: event.target.value })} placeholder={es ? "Explica para qué sirve este parámetro" : "Explain what this parameter is for"} /></label>
+                  <label><span>{es ? "Valores permitidos · opcional" : "Allowed values · optional"}</span><input value={definition.allowedValues.join(", ")} onChange={(event) => updateOption(option.name, { allowedValues: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} placeholder={es ? "prod, test, staging" : "prod, test, staging"} /></label>
+                </div>
                 <div className="scheduled-option-flags"><label><input type="checkbox" checked={definition.required} onChange={(event) => updateOption(option.name, { required: event.target.checked })} /><Check size={14} />{es ? "Obligatorio" : "Required"}</label><label><input type="checkbox" checked={definition.hidden} onChange={(event) => updateOption(option.name, { hidden: event.target.checked })} />{definition.hidden ? <EyeOff size={14} /> : <Eye size={14} />}{es ? "Ocultar al ejecutar" : "Hide when running"}</label></div>
               </article>; })}</div> : <div className="scheduled-parameters-empty"><LockKeyhole size={17} />{es ? "Añade parámetros para usarlos desde el script." : "Add parameters to use them in the script."}</div>}
               {availableKeys.length ? <div className="scheduled-key-available"><strong>{es ? "Claves protegidas disponibles" : "Available protected keys"}</strong><div>{availableKeys.map((key) => <code key={`${key.scope ?? "project"}:${key.name}`} title={key.scope === "global" ? (es ? "Clave global cifrada" : "Encrypted global key") : (es ? "Clave cifrada del proyecto" : "Encrypted project key")}>VESSEL_{key.name.replace(/^VESSEL_/, "")}<small>{key.scope === "global" ? (es ? "Global" : "Global") : (es ? "Proyecto" : "Project")}</small></code>)}</div><small>{es ? "El valor cifrado se inyecta al ejecutar. Úsalo directamente como $VESSEL_NOMBRE en el script; también queda disponible con su nombre original para compatibilidad." : "The encrypted value is injected at runtime. Reference it as $VESSEL_NAME in the script; its original name remains available for compatibility."}</small></div> : null}

@@ -6,6 +6,8 @@ import {
   deleteScheduledJobProjectKey,
   deleteScheduledTask,
   duplicateScheduledTask,
+  createScheduledJobGlobalKey,
+  createScheduledJobProjectKey,
   getScheduledTaskRun,
   getScheduledTask,
   listScheduledTaskRuns,
@@ -116,6 +118,11 @@ export async function postScheduledTasks(request: Request) {
       saveScheduledJobGlobalKey(body.name.trim(), body.value);
       return response({ data: { keys: listScheduledJobGlobalKeys() } });
     }
+    if (body.action === "globalKey.create") {
+      if (typeof body.name !== "string" || typeof body.value !== "string") return response({ error: "Key name and value are required" }, 400);
+      createScheduledJobGlobalKey(body.name.trim(), body.value);
+      return response({ data: { keys: listScheduledJobGlobalKeys() } }, 201);
+    }
     if (body.action === "globalKey.delete" && typeof body.name === "string") {
       return deleteScheduledJobGlobalKey(body.name) ? response({ data: { keys: listScheduledJobGlobalKeys() } }) : response({ error: "Global key not found" }, 404);
     }
@@ -134,6 +141,11 @@ export async function postScheduledTasks(request: Request) {
       if (body.value.length > 16_384) return response({ error: "Key value is invalid." }, 400);
       saveScheduledJobProjectKey(body.projectId, body.name.trim(), body.value);
       return response({ data: { keys: listScheduledJobProjectKeys(body.projectId) } });
+    }
+    if (body.action === "key.create" && typeof body.projectId === "string") {
+      if (typeof body.name !== "string" || typeof body.value !== "string") return response({ error: "Key name and value are required" }, 400);
+      createScheduledJobProjectKey(body.projectId, body.name.trim(), body.value);
+      return response({ data: { keys: listScheduledJobProjectKeys(body.projectId) } }, 201);
     }
     if (body.action === "key.delete" && typeof body.projectId === "string" && typeof body.name === "string") {
       return deleteScheduledJobProjectKey(body.projectId, body.name) ? response({ data: { keys: listScheduledJobProjectKeys(body.projectId) } }) : response({ error: "Project key not found" }, 404);
@@ -194,6 +206,7 @@ export async function postScheduledTasks(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Scheduled task operation failed";
     if (/UNIQUE constraint failed: vessel_job_projects\.name/i.test(message)) return response({ error: "A project with that name already exists." }, 409);
+    if (/UNIQUE constraint failed: vessel_job_(global|project)_keys\./i.test(message)) return response({ error: "A protected key with that name already exists in this scope." }, 409);
     const conflict = /already exists|already running|concurrency limit|UNIQUE constraint failed/i.test(message);
     return response({ error: message }, conflict ? 409 : 400);
   }

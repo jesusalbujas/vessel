@@ -59,6 +59,13 @@ export function saveScheduledJobGlobalKey(name: string, value: string) {
     encrypted_value = excluded.encrypted_value, updated_at = CURRENT_TIMESTAMP`).run(name, encryptControlPlaneSecret(value));
 }
 
+export function createScheduledJobGlobalKey(name: string, value: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) throw new Error("Key name must be a valid environment variable name.");
+  if (!value || value.length > 16_384 || /\0/.test(value)) throw new Error("Key value is invalid.");
+  controlPlaneDatabase().prepare("INSERT INTO vessel_job_global_keys (key_name, encrypted_value) VALUES (?, ?)")
+    .run(name, encryptControlPlaneSecret(value));
+}
+
 export function deleteScheduledJobGlobalKey(name: string): boolean {
   return Number(controlPlaneDatabase().prepare("DELETE FROM vessel_job_global_keys WHERE key_name = ?").run(name).changes) > 0;
 }
@@ -70,6 +77,15 @@ export function saveScheduledJobProjectKey(projectId: string, name: string, valu
   controlPlaneDatabase().prepare(`INSERT INTO vessel_job_project_keys (project_id, key_name, encrypted_value)
     VALUES (?, ?, ?) ON CONFLICT(project_id, key_name) DO UPDATE SET
     encrypted_value = excluded.encrypted_value, updated_at = CURRENT_TIMESTAMP`).run(projectId, name, encryptControlPlaneSecret(value));
+  controlPlaneDatabase().prepare("UPDATE vessel_job_projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
+}
+
+export function createScheduledJobProjectKey(projectId: string, name: string, value: string) {
+  if (!controlPlaneDatabase().prepare("SELECT 1 FROM vessel_job_projects WHERE id = ?").get(projectId)) throw new Error("Scheduled task project not found");
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) throw new Error("Key name must be a valid environment variable name.");
+  if (!value || value.length > 16_384 || /\0/.test(value)) throw new Error("Key value is invalid.");
+  controlPlaneDatabase().prepare("INSERT INTO vessel_job_project_keys (project_id, key_name, encrypted_value) VALUES (?, ?, ?)")
+    .run(projectId, name, encryptControlPlaneSecret(value));
   controlPlaneDatabase().prepare("UPDATE vessel_job_projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
 }
 
@@ -86,4 +102,3 @@ export function scheduledJobGlobalKeyValues(): Record<string, string> {
   const rows = controlPlaneDatabase().prepare("SELECT key_name AS name, encrypted_value AS value FROM vessel_job_global_keys").all() as Array<{ name: string; value: string }>;
   return Object.fromEntries(rows.map((row) => [row.name, decryptControlPlaneSecret(row.value)]));
 }
-

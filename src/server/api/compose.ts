@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { NextResponse } from "next/server";
 import { addVesselProjectService, authenticatedUser, getVesselProjectEnvironment, mutationUser, vesselProjectById, vesselProjectIdForResource } from "@/lib/control-plane";
 import { listDockerContainers } from "@/lib/docker/containers";
+import { dockerCliEnvironment, currentDockerEngineId } from "@/lib/docker/engine-context";
 
 const root = process.env.VESSEL_COMPOSE_ROOT ?? "/app/data/compose-projects";
 const sourceRoot = process.env.VESSEL_COMPOSE_SOURCE_ROOT ?? "/app/compose-host";
@@ -42,7 +43,7 @@ async function runCompose(project: string, args: string[], composeFile = join(/*
   }
   return new Promise<{ code: number; output: string }>((resolve) => {
     const cleanup = () => temporaryDirectory ? rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve();
-    const child = spawn("docker", ["compose", "-p", project, "--project-directory", projectDirectory, "-f", runtimeComposeFile, ...args], { env: environment });
+    const child = spawn("docker", ["compose", "-p", project, "--project-directory", projectDirectory, "-f", runtimeComposeFile, ...args], { env: { ...environment, ...dockerCliEnvironment() } });
     let output = "";
     const append = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-maxOutput); };
     child.stdout.on("data", append);
@@ -61,7 +62,7 @@ async function saveCompose(name: string, yaml: string) {
 type ComposeCliProject = { Name?: string; Status?: string; ConfigFiles?: string };
 async function listComposeProjects(): Promise<ComposeCliProject[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn("docker", ["compose", "ls", "--all", "--format", "json"]);
+    const child = spawn("docker", ["compose", "ls", "--all", "--format", "json"], { env: { ...process.env, ...dockerCliEnvironment() } });
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => child.kill("SIGTERM"), 10000);
@@ -138,6 +139,7 @@ export async function getCompose(request: Request) {
   if (!validName(name)) return privateJson({ error: "Invalid project name" }, { status: 400 });
   try { return privateJson({ name, yaml: await readFile(join(/* turbopackIgnore: true */ root, name, "compose.yaml"), "utf8"), source: "vessel" }); }
   catch {
+    if (currentDockerEngineId()) return privateJson({ error: "The Compose source belongs to the remote host and is not available in Vessel" }, { status: 409 });
     try {
       const file = await discoveredComposeFile(name);
       if (!file) return privateJson({ error: "Compose source is not mounted in Vessel" }, { status: 409 });

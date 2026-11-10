@@ -25,21 +25,28 @@ function cleanLabel(value: string): string {
   return value.trim().replace(/\s+/g, " ").slice(0, 64);
 }
 
-export function listContainerLabels(): Record<string, string[]> {
+function scopedContainerId(containerId: string, engineId?: string | null): string {
+  return engineId ? `remote:${engineId}:${containerId}` : containerId;
+}
+
+export function listContainerLabels(engineId?: string | null): Record<string, string[]> {
   const rows = getDatabase().prepare("SELECT container_id, label FROM container_labels ORDER BY label COLLATE NOCASE").all() as unknown as LabelRow[];
   return rows.reduce<Record<string, string[]>>((result, row) => {
-    (result[row.container_id] ??= []).push(row.label);
+    const prefix = engineId ? `remote:${engineId}:` : "remote:";
+    if (engineId ? !row.container_id.startsWith(prefix) : row.container_id.startsWith(prefix)) return result;
+    const containerId = engineId ? row.container_id.slice(prefix.length) : row.container_id;
+    (result[containerId] ??= []).push(row.label);
     return result;
   }, {});
 }
 
-export function addContainerLabel(containerId: string, label: string): string {
+export function addContainerLabel(containerId: string, label: string, engineId?: string | null): string {
   const clean = cleanLabel(label);
   if (!containerId || !clean || /[\u0000\r\n]/.test(clean)) throw new Error("La etiqueta no es válida");
-  getDatabase().prepare("INSERT OR IGNORE INTO container_labels (container_id, label) VALUES (?, ?)").run(containerId, clean);
+  getDatabase().prepare("INSERT OR IGNORE INTO container_labels (container_id, label) VALUES (?, ?)").run(scopedContainerId(containerId, engineId), clean);
   return clean;
 }
 
-export function removeContainerLabel(containerId: string, label: string): void {
-  getDatabase().prepare("DELETE FROM container_labels WHERE container_id = ? AND label = ?").run(containerId, cleanLabel(label));
+export function removeContainerLabel(containerId: string, label: string, engineId?: string | null): void {
+  getDatabase().prepare("DELETE FROM container_labels WHERE container_id = ? AND label = ?").run(scopedContainerId(containerId, engineId), cleanLabel(label));
 }

@@ -16,7 +16,7 @@ const sections: Array<{ en: string; es: string; items: Array<[string, LucideIcon
   { en: "ADMINISTRATION", es: "ADMINISTRACIÓN", items: [["/servers", Server, "Servers", "Servidores"], ["/ssh-keys", KeyRound, "SSH keys", "Claves SSH"], ["/registries", Container, "Registries", "Registries"], ["/git-providers", GitBranch, "Git providers", "Proveedores Git"], ["/users", Users, "Users", "Usuarios"], ["/sessions", ShieldCheck, "Sessions", "Sesiones"], ["/settings/ai", Sparkles, "AI", "IA"], ["/settings", Settings2, "Settings", "Configuración"]] },
 ];
 
-export function Sidebar() {
+export function Sidebar({ engineLabel = "Engine Local" }: { engineLabel?: string }) {
   const pathname = usePathname();
   const { language } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
@@ -101,7 +101,7 @@ export function Sidebar() {
     </div>
 
     <div className="sidebar-bottom">
-      <div className="sidebar-footer" title="Docker Engine"><span className="sidebar-engine-status"><span className="sidebar-status" /><span className="sidebar-label">Docker Engine</span></span><span className="sidebar-version">{language === "es" ? "Versión" : "Version"} v{packageInfo.version}</span></div>
+      <div className="sidebar-footer" title={engineLabel}><span className="sidebar-engine-status"><span className="sidebar-status" /><span className="sidebar-label">{engineLabel}</span></span><span className="sidebar-version">{language === "es" ? "Versión" : "Version"} v{packageInfo.version}</span></div>
       {user ? <div className="sidebar-account" ref={accountRef}>
         <button type="button" className="sidebar-person" onClick={() => { setAccountOpen((value) => !value); setHovered(true); }} aria-expanded={accountOpen} aria-label={language === "es" ? "Abrir menú de cuenta" : "Open account menu"}><UserAvatar className="account-avatar" username={user.username} avatarUrl={user.avatarUrl} /><span className="account-copy"><strong>{user.username}</strong><small>{user.role}</small>{user.email ? <small className="account-email"><Mail size={12} />{user.email}</small> : null}</span><ChevronUp size={16} className={`account-chevron${accountOpen ? " is-open" : ""}`} /></button>
         {accountOpen ? <div className="account-menu"><div className="account-menu-heading"><UserAvatar className="account-avatar" username={user.username} avatarUrl={user.avatarUrl} /><div><strong>{language === "es" ? "Cuenta" : "Account"}</strong><small className="account-menu-email"><Mail size={12} />{user.email || user.role}</small></div></div><Link href="/profile"><UserRound size={17} />{language === "es" ? "Mi perfil" : "My profile"}</Link>{user.role === "administrator" ? <Link href="/users"><Users size={17} />{language === "es" ? "Gestionar usuarios" : "Manage users"}</Link> : null}<button type="button" onClick={logout}><LogOut size={17} />{language === "es" ? "Cerrar sesión" : "Sign out"}</button></div> : null}

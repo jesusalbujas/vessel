@@ -34,6 +34,29 @@ export function ResourceListLoadingSkeleton({ variant, label = "Loading Docker r
   </div>;
 }
 
+export function ContainerListLoadingSkeleton({ layout, label = "Loading containers" }: { layout: "cards" | "table"; label?: string }) {
+  return <div className={`container-loading-skeleton container-loading-${layout}`} role="status" aria-label={label} aria-busy="true">
+    <span className="sr-only">{label}</span>
+    {layout === "cards" ? Array.from({ length: 4 }, (_, index) => <article className="container-loading-card" key={index}>
+      <header><i className="skeleton-block" /><span><i className="skeleton-block" /><i className="skeleton-block" /></span><i className="skeleton-block" /></header>
+      <div><i className="skeleton-block" /><i className="skeleton-block" /><i className="skeleton-block" /></div>
+      <footer><i className="skeleton-block" /><i className="skeleton-block" /><i className="skeleton-block" /></footer>
+    </article>) : <div className="container-loading-table">
+      <header>{Array.from({ length: 7 }, (_, index) => <i className="skeleton-block" key={index} />)}</header>
+      {Array.from({ length: 7 }, (_, row) => <div key={row}>{Array.from({ length: 7 }, (_, column) => <i className="skeleton-block" key={column} />)}</div>)}
+    </div>}
+  </div>;
+}
+
+export function ComposeProjectsLoadingSkeleton({ label = "Loading Compose projects" }: { label?: string }) {
+  return <div className="compose-projects-loading" role="status" aria-label={label} aria-busy="true">
+    <span className="sr-only">{label}</span>
+    {Array.from({ length: 4 }, (_, index) => <div className="compose-project-loading-card" key={index}>
+      <i className="skeleton-block" /><span><i className="skeleton-block" /><i className="skeleton-block" /><i className="skeleton-block" /></span><i className="skeleton-block" />
+    </div>)}
+  </div>;
+}
+
 export function CodeLoadingSkeleton() {
   return <div className="code-loading-skeleton" role="status" aria-label="Loading code">
     <span className="sr-only">Loading code</span>

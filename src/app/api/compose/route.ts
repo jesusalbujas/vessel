@@ -1,3 +1,4 @@
 import { getCompose, postCompose } from "@/server/api/compose";
-export const GET = getCompose;
-export const POST = postCompose;
+import { withDockerEngine, withRemoteDockerCli } from "@/lib/docker/request-context";
+export const GET = withDockerEngine(withRemoteDockerCli(getCompose));
+export const POST = withDockerEngine(withRemoteDockerCli(postCompose));

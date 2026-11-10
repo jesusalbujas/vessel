@@ -1,2 +1,3 @@
 import { getLogs } from "@/server/api/logs";
-export const GET = getLogs;
+import { withDockerEngine } from "@/lib/docker/request-context";
+export const GET = withDockerEngine(getLogs);

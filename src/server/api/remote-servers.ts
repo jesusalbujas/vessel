@@ -3,6 +3,7 @@ import { authenticatedUser, mutationUser } from "@/lib/control-plane";
 import { dockerApiBase } from "@/lib/docker/client";
 import { deleteRemoteServer, listRemoteServers, markRemoteServerTested, remoteServerWithKey, saveRemoteServer } from "@/lib/remote-servers";
 import { getSSHKeyPrivate } from "@/lib/ssh-keys";
+import { getLocalEngineName, updateLocalEngineName } from "@/lib/engine-preferences";
 
 type RemoteInput = { id?: string; name?: string; host?: string; port?: number; username?: string; privateKey?: string; sshKeyId?: string; fingerprint?: string; knownHost?: string };
 type EngineInfo = { name: string; serverVersion: string; operatingSystem: string; architecture: string; nCPU: number; memTotal: number };
@@ -39,12 +40,26 @@ export async function getRemoteServers(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return response({ error: "Authentication required" }, { status: 401 });
   if (user.role !== "administrator") return response({ error: "Administrator access required" }, { status: 403 });
-  const servers = listRemoteServers();
-  await Promise.allSettled(servers.map(async (server) => {
-    const privateRecord = remoteServerWithKey(server.id);
-    if (privateRecord) await backend("engines/register", "POST", privateRecord);
-  }));
-  return response({ data: servers });
+  return response({ data: listRemoteServers() });
+}
+
+export function getRemoteEngineChoices(request: Request) {
+  const user = authenticatedUser(request);
+  if (!user) return response({ error: "Authentication required" }, { status: 401 });
+  return response({ data: listRemoteServers().map(({ id, name, host }) => ({ id, name, host })), localEngineName: getLocalEngineName(), canManage: user.role === "administrator" });
+}
+
+export async function patchRemoteEngineChoices(request: Request) {
+  const user = authenticatedUser(request);
+  if (!user) return response({ error: "Authentication required" }, { status: 401 });
+  if (user.role !== "administrator") return response({ error: "Administrator access required" }, { status: 403 });
+  const body = await request.json().catch(() => null) as { localEngineName?: unknown } | null;
+  if (!body || typeof body.localEngineName !== "string") return response({ error: "localEngineName is required" }, { status: 400 });
+  try {
+    return response({ ok: true, localEngineName: updateLocalEngineName(body.localEngineName) });
+  } catch (error) {
+    return response({ error: error instanceof Error ? error.message : "No se pudo actualizar el nombre del Engine local" }, { status: 400 });
+  }
 }
 
 export async function postRemoteServers(request: Request) {

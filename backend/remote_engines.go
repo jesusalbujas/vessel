@@ -31,25 +31,111 @@ type remoteEngine struct {
 	KnownHost   string `json:"knownHost"`
 }
 
-// proxy opens the Docker-over-SSH transport only for this request. The SSH
-// identity is materialized in a private temporary directory and removed once
-// the response has been streamed back to Vessel.
+// proxy uses a short-lived pooled Docker-over-SSH client for this Engine. Its
+// identity stays in a private temporary directory only while the cache entry
+// is active and is removed when the entry expires or the Engine is removed.
 func (engine remoteEngine) proxy(w http.ResponseWriter, r *http.Request, prefix string) {
-	client, cleanup, err := newRemoteDockerClient(engine)
-	if err != nil {
-		http.Error(w, "remote Docker Engine connection failed", http.StatusBadGateway)
+	select {
+	case remoteDockerRequests <- struct{}{}:
+		defer func() { <-remoteDockerRequests }()
+	case <-r.Context().Done():
+		http.Error(w, "remote Docker request cancelled while waiting for an SSH connection", http.StatusServiceUnavailable)
 		return
 	}
-	defer cleanup()
+	client, err := remoteDockerClientFor(engine)
+	if err != nil {
+		http.Error(w, "remote Docker-over-SSH setup failed", http.StatusBadGateway)
+		return
+	}
 	client.proxy(w, r, prefix)
+}
+
+func (engine remoteEngine) overview(w http.ResponseWriter, r *http.Request) {
+	select {
+	case remoteDockerRequests <- struct{}{}:
+		defer func() { <-remoteDockerRequests }()
+	case <-r.Context().Done():
+		http.Error(w, "remote Docker request cancelled while waiting for an SSH connection", http.StatusServiceUnavailable)
+		return
+	}
+	client, err := remoteDockerClientFor(engine)
+	if err != nil {
+		jsonResponse(w, http.StatusBadGateway, map[string]string{"error": "remote Docker-over-SSH setup failed"})
+		return
+	}
+	client.overview(w, r)
+}
+
+type remoteDockerClientEntry struct {
+	client   *dockerClient
+	cleanup  func()
+	lastUsed time.Time
 }
 
 type remoteEngineManager struct {
 	mu      sync.RWMutex
 	engines map[string]remoteEngine
+	clients map[string]*remoteDockerClientEntry
 }
 
-var remoteEngines = remoteEngineManager{engines: make(map[string]remoteEngine)}
+var remoteEngines = remoteEngineManager{engines: make(map[string]remoteEngine), clients: make(map[string]*remoteDockerClientEntry)}
+var remoteDockerRequests = make(chan struct{}, 4)
+var remoteDockerClientJanitor sync.Once
+
+func remoteDockerClientFor(engine remoteEngine) (*dockerClient, error) {
+	remoteEngines.mu.Lock()
+	defer remoteEngines.mu.Unlock()
+	registered, ok := remoteEngines.engines[engine.ID]
+	if !ok || registered != engine {
+		return nil, fmt.Errorf("remote Engine registration changed")
+	}
+	if entry := remoteEngines.clients[engine.ID]; entry != nil {
+		entry.lastUsed = time.Now()
+		return entry.client, nil
+	}
+	client, cleanup, err := newRemoteDockerClient(engine)
+	if err != nil {
+		return nil, err
+	}
+	remoteEngines.clients[engine.ID] = &remoteDockerClientEntry{client: client, cleanup: cleanup, lastUsed: time.Now()}
+	return client, nil
+}
+
+func closeRemoteDockerClient(entry *remoteDockerClientEntry) {
+	if entry == nil {
+		return
+	}
+	entry.client.client.CloseIdleConnections()
+	entry.cleanup()
+}
+
+func expireIdleRemoteDockerClients(now time.Time) {
+	const idleLimit = 5 * time.Minute
+	var expired []*remoteDockerClientEntry
+	remoteEngines.mu.Lock()
+	for id, entry := range remoteEngines.clients {
+		if now.Sub(entry.lastUsed) >= idleLimit {
+			delete(remoteEngines.clients, id)
+			expired = append(expired, entry)
+		}
+	}
+	remoteEngines.mu.Unlock()
+	for _, entry := range expired {
+		closeRemoteDockerClient(entry)
+	}
+}
+
+func startRemoteDockerClientJanitor() {
+	remoteDockerClientJanitor.Do(func() {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				expireIdleRemoteDockerClients(now)
+			}
+		}()
+	})
+}
 
 var engineHostPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$`)
 var engineUserPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$`)
@@ -67,6 +153,7 @@ func remoteEngineByID(id string) (remoteEngine, bool) {
 }
 
 func registerRemoteEngineHandlers(mux *http.ServeMux) {
+	startRemoteDockerClientJanitor()
 	mux.HandleFunc("/api/v1/engines/fingerprint", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -119,9 +206,40 @@ func registerRemoteEngineHandlers(mux *http.ServeMux) {
 			return
 		}
 		remoteEngines.mu.Lock()
+		oldEngine, existed := remoteEngines.engines[engine.ID]
+		var oldClient *remoteDockerClientEntry
+		if existed && oldEngine != engine {
+			oldClient = remoteEngines.clients[engine.ID]
+			delete(remoteEngines.clients, engine.ID)
+		}
 		remoteEngines.engines[engine.ID] = engine
 		remoteEngines.mu.Unlock()
+		closeRemoteDockerClient(oldClient)
 		jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("/api/v1/engines/metrics/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/engines/metrics/")
+		if !engineIDPattern.MatchString(id) {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid Engine ID"})
+			return
+		}
+		engine, ok := remoteEngineByID(id)
+		if !ok {
+			jsonResponse(w, http.StatusNotFound, map[string]string{"error": "Docker Engine not registered"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		metrics, err := readRemoteHostMetrics(ctx, engine)
+		if err != nil {
+			jsonResponse(w, http.StatusBadGateway, map[string]string{"error": "could not read remote host metrics"})
+			return
+		}
+		jsonResponse(w, http.StatusOK, metrics)
 	})
 	mux.HandleFunc("/api/v1/engines/remove/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -135,7 +253,10 @@ func registerRemoteEngineHandlers(mux *http.ServeMux) {
 		}
 		remoteEngines.mu.Lock()
 		delete(remoteEngines.engines, id)
+		client := remoteEngines.clients[id]
+		delete(remoteEngines.clients, id)
 		remoteEngines.mu.Unlock()
+		closeRemoteDockerClient(client)
 		jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 }
@@ -154,7 +275,7 @@ func validRemoteEngine(engine remoteEngine) bool {
 func scanSSHHostKey(ctx context.Context, host string, port int) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "ssh-keyscan", "-T", "5", "-p", strconv.Itoa(port), host)
+	command := exec.CommandContext(ctx, "ssh-keyscan", "-T", "5", "-t", "ed25519", "-p", strconv.Itoa(port), host)
 	output, err := command.Output()
 	if err != nil {
 		return "", "", err
@@ -215,6 +336,163 @@ type dockerInfoSummary struct {
 	MemTotal         int64  `json:"MemTotal"`
 }
 
+type remoteHostMetrics struct {
+	CPU struct {
+		Percent float64 `json:"percent"`
+	} `json:"cpu"`
+	Memory struct {
+		Used  int64 `json:"used"`
+		Total int64 `json:"total"`
+	} `json:"memory"`
+	Disk struct {
+		Used  int64  `json:"used"`
+		Total int64  `json:"total"`
+		Source string `json:"source"`
+	} `json:"disk"`
+	SampledAt time.Time `json:"sampledAt"`
+}
+
+func cpuTickTotals(line string) (uint64, uint64, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0, fmt.Errorf("invalid CPU counters")
+	}
+	var total uint64
+	var idle uint64
+	for index, field := range fields[1:] {
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return 0, 0, err
+		}
+		total += value
+		if index == 3 || index == 4 {
+			idle += value
+		}
+	}
+	return total, idle, nil
+}
+
+func readRemoteHostMetrics(ctx context.Context, engine remoteEngine) (remoteHostMetrics, error) {
+	_, keyPath, knownHostsPath, cleanup, err := prepareRemoteSSH(engine)
+	if err != nil {
+		return remoteHostMetrics{}, err
+	}
+	defer cleanup()
+	target := engine.Username + "@" + engine.Host
+	if net.ParseIP(engine.Host) != nil && strings.Contains(engine.Host, ":") {
+		target = engine.Username + "@[" + engine.Host + "]"
+	}
+	command := exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-p", strconv.Itoa(engine.Port), "-i", keyPath,
+		"-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UserKnownHostsFile="+knownHostsPath,
+		target, "LC_ALL=C; printf '__VESSEL_CPU_FIRST__\\n'; head -n 1 /proc/stat; sleep 1; printf '__VESSEL_CPU_SECOND__\\n'; head -n 1 /proc/stat; printf '__VESSEL_MEMORY__\\n'; cat /proc/meminfo; printf '__VESSEL_DISK__\\n'; df -Pk /")
+	output, err := command.Output()
+	if err != nil {
+		return remoteHostMetrics{}, err
+	}
+	metrics, err := parseRemoteHostMetrics(string(output))
+	if err != nil {
+		return remoteHostMetrics{}, err
+	}
+	metrics.SampledAt = time.Now().UTC()
+	return metrics, nil
+}
+
+func parseRemoteHostMetrics(output string) (remoteHostMetrics, error) {
+	const (
+		cpuFirstMarker  = "__VESSEL_CPU_FIRST__"
+		cpuSecondMarker = "__VESSEL_CPU_SECOND__"
+		memoryMarker    = "__VESSEL_MEMORY__"
+		diskMarker      = "__VESSEL_DISK__"
+	)
+	var metrics remoteHostMetrics
+	var firstCPU string
+	var secondCPU string
+	var availableMemory int64 = -1
+	var fallbackAvailableMemory int64
+	section := ""
+	diskRowRead := false
+	for _, line := range strings.Split(output, "\n") {
+		switch strings.TrimSpace(line) {
+		case cpuFirstMarker:
+			section = "cpu-first"
+			continue
+		case cpuSecondMarker:
+			section = "cpu-second"
+			continue
+		case memoryMarker:
+			section = "memory"
+			continue
+		case diskMarker:
+			section = "disk"
+			continue
+		}
+		switch section {
+		case "cpu-first":
+			if firstCPU == "" && strings.HasPrefix(strings.TrimSpace(line), "cpu ") {
+				firstCPU = line
+			}
+		case "cpu-second":
+			if secondCPU == "" && strings.HasPrefix(strings.TrimSpace(line), "cpu ") {
+				secondCPU = line
+			}
+		case "memory":
+			key, value, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			fields := strings.Fields(value)
+			if len(fields) == 0 {
+				continue
+			}
+			kilobytes, err := strconv.ParseInt(fields[0], 10, 64)
+			if err != nil {
+				continue
+			}
+			switch key {
+			case "MemTotal":
+				metrics.Memory.Total = kilobytes * 1024
+			case "MemAvailable":
+				availableMemory = kilobytes * 1024
+			case "MemFree", "Buffers", "Cached", "SReclaimable":
+				fallbackAvailableMemory += kilobytes * 1024
+			case "Shmem":
+				fallbackAvailableMemory -= kilobytes * 1024
+			}
+		case "disk":
+			if !diskRowRead && strings.HasPrefix(strings.TrimSpace(line), "Filesystem") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 6 {
+				continue
+			}
+			total, totalErr := strconv.ParseInt(fields[1], 10, 64)
+			used, usedErr := strconv.ParseInt(fields[2], 10, 64)
+			if totalErr == nil && usedErr == nil {
+				metrics.Disk.Total = total * 1024
+				metrics.Disk.Used = used * 1024
+				metrics.Disk.Source = "/"
+				diskRowRead = true
+			}
+		}
+	}
+	firstTotal, firstIdle, firstErr := cpuTickTotals(firstCPU)
+	secondTotal, secondIdle, secondErr := cpuTickTotals(secondCPU)
+	if firstErr != nil || secondErr != nil || secondTotal <= firstTotal || metrics.Memory.Total <= 0 || metrics.Disk.Total <= 0 || !diskRowRead {
+		return remoteHostMetrics{}, fmt.Errorf("incomplete remote host metrics")
+	}
+	if availableMemory < 0 {
+		availableMemory = fallbackAvailableMemory
+	}
+	metrics.Memory.Used = max(0, min(metrics.Memory.Total, metrics.Memory.Total-max(0, availableMemory)))
+	totalTicks := secondTotal - firstTotal
+	if totalTicks > 0 {
+		idleTicks := secondIdle - firstIdle
+		metrics.CPU.Percent = max(0, min(100, 100*float64(totalTicks-idleTicks)/float64(totalTicks)))
+	}
+	return metrics, nil
+}
+
 func readRemoteEngineInfo(ctx context.Context, engine remoteEngine) (dockerInfoSummary, error) {
 	client, cleanup, err := newRemoteDockerClient(engine)
 	if err != nil {
@@ -240,39 +518,59 @@ func readRemoteEngineInfo(ctx context.Context, engine remoteEngine) (dockerInfoS
 	return info, nil
 }
 
-func newRemoteDockerClient(engine remoteEngine) (*dockerClient, func(), error) {
+func prepareRemoteSSH(engine remoteEngine) (string, string, string, func(), error) {
 	directory, err := os.MkdirTemp("", "vessel-ssh-engine-")
 	if err != nil {
-		return nil, func() {}, err
+		return "", "", "", func() {}, err
 	}
 	cleanup := func() { _ = os.RemoveAll(directory) }
 	keyPath := filepath.Join(directory, "identity")
 	if err := os.WriteFile(keyPath, []byte(engine.PrivateKey+"\n"), 0600); err != nil {
 		cleanup()
-		return nil, func() {}, err
+		return "", "", "", func() {}, err
 	}
 	keyCheck := exec.Command("ssh-keygen", "-y", "-P", "", "-f", keyPath)
 	if err := keyCheck.Run(); err != nil {
 		cleanup()
-		return nil, func() {}, fmt.Errorf("SSH_PRIVATE_KEY_INVALID")
+		return "", "", "", func() {}, fmt.Errorf("SSH_PRIVATE_KEY_INVALID")
 	}
 	knownHostsPath := filepath.Join(directory, "known_hosts")
 	if err := os.WriteFile(knownHostsPath, []byte(engine.KnownHost+"\n"), 0600); err != nil {
 		cleanup()
+		return "", "", "", func() {}, err
+	}
+	return directory, keyPath, knownHostsPath, cleanup, nil
+}
+
+func newRemoteDockerClient(engine remoteEngine) (*dockerClient, func(), error) {
+	_, keyPath, knownHostsPath, cleanup, err := prepareRemoteSSH(engine)
+	if err != nil {
 		return nil, func() {}, err
 	}
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return dialDockerSSH(ctx, engine, keyPath, knownHostsPath)
-	}}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialDockerSSH(ctx, engine, keyPath, knownHostsPath)
+		},
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 4,
+		MaxConnsPerHost:     4,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &dockerClient{client: &http.Client{Transport: transport, Timeout: 45 * time.Second}, baseURL: "http://docker" + apiVersionPath}, cleanup, nil
 }
 
 func dialDockerSSH(ctx context.Context, engine remoteEngine, keyPath, knownHostsPath string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	target := engine.Username + "@" + engine.Host
 	if net.ParseIP(engine.Host) != nil && strings.Contains(engine.Host, ":") {
 		target = engine.Username + "@[" + engine.Host + "]"
 	}
-	command := exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-p", strconv.Itoa(engine.Port), "-i", keyPath,
+	// The SSH process backs a pooled HTTP connection and must outlive the first
+	// Docker request that caused the dial. The transport closes the managed
+	// connection when idle or when its Engine entry expires.
+	command := exec.Command("ssh", "-F", "/dev/null", "-p", strconv.Itoa(engine.Port), "-i", keyPath,
 		"-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UserKnownHostsFile="+knownHostsPath,
 		target, "docker", "system", "dial-stdio")
 	stdin, err := command.StdinPipe()
@@ -286,6 +584,13 @@ func dialDockerSSH(ctx context.Context, engine remoteEngine, keyPath, knownHosts
 	command.Stderr = io.Discard
 	clientConn, bridgeConn := net.Pipe()
 	if err := command.Start(); err != nil {
+		_ = clientConn.Close()
+		_ = bridgeConn.Close()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
 		_ = clientConn.Close()
 		_ = bridgeConn.Close()
 		return nil, err

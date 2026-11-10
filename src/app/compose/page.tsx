@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, CheckCircle2, CircleAlert, Copy, Eye, FilePlus2, LoaderCircle, Power, Rocket, Wrench, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { CodeLoadingSkeleton } from "@/app/components/LoadingSkeletons";
+import { CodeLoadingSkeleton, ComposeProjectsLoadingSkeleton } from "@/app/components/LoadingSkeletons";
 import { ComposeYamlEditor } from "./ComposeYamlEditor";
 import "../globals.css";
 
@@ -317,7 +317,7 @@ export default function ComposePage() {
         </div>
         <span className="count-badge">{projects.length}</span>
       </div>
-      {discovering ? <p className="empty-state">{language === "es" ? "Buscando proyectos Compose…" : "Discovering Compose projects…"}</p>
+      {discovering ? <ComposeProjectsLoadingSkeleton label={language === "es" ? "Cargando proyectos Compose" : "Loading Compose projects"} />
         : projects.length ? <div className="project-grid">{projects.map((project) => <button type="button" className={`project-card ${project.name === name ? "selected" : ""}`} key={project.name} onClick={() => void selectProject(project)}>
           <span className="project-icon"><Boxes size={17} /></span>
           <span><strong>{project.name}</strong><small>{project.containers.length} {language === "es" ? "contenedor(es)" : "container(s)"}{project.status ? ` · ${project.status}` : ""}</small>{project.configFiles?.[0] ? <small className="compose-project-path" title={project.configFiles[0]}>{project.configFiles[0]}</small> : null}</span>

@@ -5,6 +5,7 @@ import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type Poi
 import { Activity, ArrowDownToLine, ArrowRight, Boxes, CircleAlert, CircleCheck, CirclePause, CirclePlay, Container, Cpu, Database, FolderKanban, FolderOpen, HardDrive, Images, MemoryStick, Monitor, Network, RefreshCw, Server } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { OverviewLoadingSkeleton } from "@/app/components/LoadingSkeletons";
+import VesselSelect from "@/app/components/VesselSelect";
 
 type ContainerSummary = { name: string; status: string; composeProject: string | null };
 type ProjectSummary = { name: string; containers: string[] };
@@ -13,8 +14,10 @@ type EngineInfo = { Name?: string; ServerVersion?: string; ComposeVersion?: stri
 type DockerUpdate = { currentVersion: string; latestVersion: string; updateAvailable: boolean; releaseUrl: string; publishedAt: string | null; checkedAt: string };
 type Snapshot = { containers: ContainerSummary[]; projects: ProjectSummary[]; workspaces: WorkspaceSummary[]; images: number | null; volumes: number | null; networks: number | null; host: string; engine: EngineInfo | null };
 type DockerDiskMetrics = { images: number; containers: number; volumes: number; buildCache: number; total: number };
-type IoMetrics = { blockRead: number; blockWrite: number; networkIn: number; networkOut: number; containers: number };
-type HostMetrics = { cpu: { percent: number }; memory: { used: number; total: number }; disk: { used: number; total: number; source: string }; dockerDisk: DockerDiskMetrics | null; io: IoMetrics | null; sampledAt: string };
+type IoMetrics = { blockRead: number; blockWrite: number; networkIn: number; networkOut: number; containers: number; failedContainers: number };
+type RemoteServerSummary = { id: string; name: string; host: string };
+type RemoteMetric = { server: RemoteServerSummary; metrics: HostMetrics | null; error: boolean };
+type HostMetrics = { cpu: { percent: number }; memory: { used: number; total: number }; disk: { used: number; total: number; source: string }; dockerDisk: DockerDiskMetrics | null; dockerDiskError: string | null; io: IoMetrics | null; ioError: string | null; sampledAt: string; remoteServers?: RemoteServerSummary[]; server?: RemoteServerSummary };
 type MetricSample = { value: number; at: number };
 type IoSample = IoMetrics & { at: number };
 type HistoryRange = "15m" | "1h" | "6h" | "24h";
@@ -155,14 +158,14 @@ function IoHistoryChart({ samples, firstKey, secondKey, firstLabel, secondLabel,
   </div>;
 }
 
-function DockerDiskUsage({ disk, es }: { disk: DockerDiskMetrics | null; es: boolean }) {
+function DockerDiskUsage({ disk, error, es }: { disk: DockerDiskMetrics | null; error: string | null; es: boolean }) {
   const rows = disk ? [
     { key: "images", label: es ? "Imágenes" : "Images", value: disk.images, icon: Images },
     { key: "containers", label: es ? "Contenedores" : "Containers", value: disk.containers, icon: Container },
     { key: "volumes", label: es ? "Volúmenes" : "Volumes", value: disk.volumes, icon: Database },
     { key: "buildCache", label: es ? "Caché de compilación" : "Build cache", value: disk.buildCache, icon: Boxes },
   ] : [];
-  return <article className="overview-io-card overview-docker-disk"><div className="overview-io-card-head"><span className="overview-io-icon"><HardDrive size={18} /></span><div><h3>{es ? "Uso de disco Docker" : "Docker disk usage"}</h3><p>{es ? "Espacio ocupado por recursos del Engine." : "Space used by Engine resources."}</p></div></div>{disk ? <><strong className="overview-docker-total">{formatSize(disk.total)}</strong><div className="overview-docker-stack" role="img" aria-label={es ? `Uso Docker total ${formatSize(disk.total)}` : `Docker total usage ${formatSize(disk.total)}`}>{rows.map((row) => <i key={row.key} className={`docker-disk-${row.key}`} style={{ width: `${disk.total ? 100 * row.value / disk.total : 0}%` }} />)}</div><div className="overview-docker-breakdown">{rows.map(({ key, label, value, icon: Icon }) => <div key={key}><span><Icon size={14} /><i className={`docker-disk-dot docker-disk-${key}`} />{label}</span><strong>{formatSize(value)}</strong></div>)}</div></> : <div className="overview-metrics-unavailable">{es ? "El Engine no devolvió el detalle de almacenamiento Docker." : "Docker Engine did not return storage details."}</div>}</article>;
+  return <article className="overview-io-card overview-docker-disk"><div className="overview-io-card-head"><span className="overview-io-icon"><HardDrive size={18} /></span><div><h3>{es ? "Uso de disco Docker" : "Docker disk usage"}</h3><p>{es ? "Espacio ocupado por recursos del Engine." : "Space used by Engine resources."}</p></div></div>{disk ? <><strong className="overview-docker-total">{formatSize(disk.total)}</strong><div className="overview-docker-stack" role="img" aria-label={es ? `Uso Docker total ${formatSize(disk.total)}` : `Docker total usage ${formatSize(disk.total)}`}>{rows.map((row) => <i key={row.key} className={`docker-disk-${row.key}`} style={{ width: `${disk.total ? 100 * row.value / disk.total : 0}%` }} />)}</div><div className="overview-docker-breakdown">{rows.map(({ key, label, value, icon: Icon }) => <div key={key}><span><Icon size={14} /><i className={`docker-disk-dot docker-disk-${key}`} />{label}</span><strong>{formatSize(value)}</strong></div>)}</div></> : <div className="overview-metrics-unavailable">{error ? `${es ? "No se pudo consultar el almacenamiento Docker:" : "Could not read Docker storage:"} ${error}` : es ? "El Engine no devolvió el detalle de almacenamiento Docker." : "Docker Engine did not return storage details."}</div>}</article>;
 }
 
 function StorageCapacity({ metrics, value, es }: { metrics: HostMetrics | null; value: number | null; es: boolean }) {
@@ -188,20 +191,70 @@ export default function OverviewPage() {
   const [dockerUpdateError, setDockerUpdateError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [metrics, setMetrics] = useState<HostMetrics | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
+  const [dockerDetailsLoading, setDockerDetailsLoading] = useState(true);
+  const [dockerDetailsRequestError, setDockerDetailsRequestError] = useState(false);
+  const [dockerDetailsRetry, setDockerDetailsRetry] = useState(0);
+  const [remoteServers, setRemoteServers] = useState<RemoteServerSummary[]>([]);
+  const [remoteMetrics, setRemoteMetrics] = useState<RemoteMetric[]>([]);
+  const [remoteMetricsLoading, setRemoteMetricsLoading] = useState(false);
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(15);
   const [history, setHistory] = useState<MetricsHistory>({ cpu: [], memory: [], io: [] });
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyRange, setHistoryRange] = useState<HistoryRange>("1h");
+  const [selectedEngineId, setSelectedEngineId] = useState("local");
+  const [engineSelectionReady, setEngineSelectionReady] = useState(false);
+  const [localEngineName, setLocalEngineName] = useState("Engine Local");
+
+  useEffect(() => {
+    const savedEngine = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("vessel-engine-id="))?.slice("vessel-engine-id=".length);
+    try { setSelectedEngineId(savedEngine ? decodeURIComponent(savedEngine) : "local"); }
+    catch { setSelectedEngineId("local"); }
+    setEngineSelectionReady(true);
+    fetch("/api/engines", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) return;
+      const payload = await response.json() as { data?: RemoteServerSummary[]; localEngineName?: string };
+      if (Array.isArray(payload.data)) setRemoteServers(payload.data);
+      if (payload.localEngineName) setLocalEngineName(payload.localEngineName);
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const handleEngineChange = (event: Event) => {
+      const nextEngineId = (event as CustomEvent<string>).detail;
+      if (typeof nextEngineId !== "string" || !nextEngineId) return;
+      setSelectedEngineId(nextEngineId);
+      setSnapshot(null);
+      setMetrics(null);
+      setMetricsLoading(true);
+      setDockerDetailsLoading(true);
+      setDockerDetailsRequestError(false);
+      setRemoteMetrics([]);
+      setLoading(true);
+      setError(false);
+      setEngineError(null);
+    };
+    window.addEventListener("vessel-engine-changed", handleEngineChange);
+    return () => window.removeEventListener("vessel-engine-changed", handleEngineChange);
+  }, []);
+
+  function selectEngine(engineId: string) {
+    if (engineId === selectedEngineId) return;
+    document.cookie = `vessel-engine-id=${encodeURIComponent(engineId)}; Path=/; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
+    window.dispatchEvent(new CustomEvent("vessel-engine-changed", { detail: engineId }));
+  }
 
   async function checkDockerUpdate(force = false) {
     const startedAt = performance.now();
     setDockerUpdateLoading(true);
     setDockerUpdateError(false);
     try {
-      const response = await fetch(`/api/docker-update${force ? "?refresh=1" : ""}`, { cache: "no-store" });
+      const params = new URLSearchParams({ engineId: selectedEngineId });
+      if (force) params.set("refresh", "1");
+      const response = await fetch(`/api/docker-update?${params}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok || !payload?.data) throw new Error("Docker update check failed");
       setDockerUpdate(payload.data as DockerUpdate);
@@ -214,11 +267,18 @@ export default function OverviewPage() {
     }
   }
 
-  useEffect(() => { void checkDockerUpdate(); }, []);
+  useEffect(() => {
+    if (!engineSelectionReady) return;
+    setDockerUpdate(null);
+    void checkDockerUpdate();
+  }, [engineSelectionReady, selectedEngineId]);
 
   useEffect(() => {
+    if (!engineSelectionReady) return;
+    setHistoryLoaded(false);
     try {
-      const saved = JSON.parse(window.localStorage.getItem(METRICS_HISTORY_KEY) ?? "null") as Partial<MetricsHistory> | null;
+      const historyKey = `${METRICS_HISTORY_KEY}:${selectedEngineId}`;
+      const saved = JSON.parse(window.localStorage.getItem(historyKey) ?? "null") as Partial<MetricsHistory> | null;
       const cutoff = Date.now() - METRICS_HISTORY_MAX_AGE;
       const clean = (samples: unknown) => Array.isArray(samples) ? samples.filter((sample): sample is MetricSample => Boolean(sample && typeof sample === "object" && Number.isFinite((sample as MetricSample).value) && Number.isFinite((sample as MetricSample).at) && (sample as MetricSample).at >= cutoff && (sample as MetricSample).value >= 0 && (sample as MetricSample).value <= 100)).slice(-METRICS_HISTORY_MAX_SAMPLES) : [];
       const cleanIo = Array.isArray(saved?.io) ? saved.io.filter((sample): sample is IoSample => {
@@ -229,12 +289,12 @@ export default function OverviewPage() {
       setHistory({ cpu: clean(saved?.cpu), memory: clean(saved?.memory), io: cleanIo });
     } catch { setHistory({ cpu: [], memory: [], io: [] }); }
     setHistoryLoaded(true);
-  }, []);
+  }, [engineSelectionReady, selectedEngineId]);
 
   useEffect(() => {
     if (!historyLoaded) return;
-    try { window.localStorage.setItem(METRICS_HISTORY_KEY, JSON.stringify(history)); } catch { /* Keep live metrics available if browser storage is full or disabled. */ }
-  }, [history, historyLoaded]);
+    try { window.localStorage.setItem(`${METRICS_HISTORY_KEY}:${selectedEngineId}`, JSON.stringify(history)); } catch { /* Keep live metrics available if browser storage is full or disabled. */ }
+  }, [history, historyLoaded, selectedEngineId]);
 
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" }).then((response) => response.ok ? response.json() : null)
@@ -243,60 +303,155 @@ export default function OverviewPage() {
   }, []);
 
   useEffect(() => {
-    if (!historyLoaded) return;
+    if (!engineSelectionReady || !historyLoaded) return;
     let cancelled = false;
+    let timer: number | undefined;
+    const controller = new AbortController();
+    setMetricsLoading(true);
+    function scheduleNext() {
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        if (document.visibilityState === "visible") void loadMetrics();
+        else scheduleNext();
+      }, refreshIntervalSeconds * 1000);
+    }
     async function loadMetrics() {
       try {
-        const response = await fetch("/api/metrics", { cache: "no-store" });
+        const response = await fetch(`/api/metrics?engineId=${encodeURIComponent(selectedEngineId)}&hostOnly=1`, { cache: "no-store", signal: controller.signal });
         if (!response.ok) throw new Error("Metrics unavailable");
         const next = await response.json() as HostMetrics;
         if (cancelled) return;
-        setMetrics(next);
+        setMetrics((current) => ({ ...next, dockerDisk: current?.dockerDisk ?? next.dockerDisk, dockerDiskError: current?.dockerDiskError ?? next.dockerDiskError, io: current?.io ?? next.io, ioError: current?.ioError ?? next.ioError }));
+        setRemoteServers((current) => JSON.stringify(current) === JSON.stringify(next.remoteServers ?? []) ? current : next.remoteServers ?? []);
         const sampledAt = Date.parse(next.sampledAt) || Date.now();
         setHistory((current) => ({
           cpu: appendSample(current.cpu, { value: next.cpu.percent, at: sampledAt }),
           memory: appendSample(current.memory, { value: percent(next.memory.used, next.memory.total), at: sampledAt }),
-          io: next.io ? appendIoSample(current.io, { ...next.io, at: sampledAt }) : current.io,
+          io: current.io,
         }));
       } catch { if (!cancelled) setMetrics(null); }
-      finally { if (!cancelled) setMetricsLoading(false); }
+      finally {
+        if (!cancelled) {
+          setMetricsLoading(false);
+          scheduleNext();
+        }
+      }
     }
     void loadMetrics();
-    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void loadMetrics(); }, refreshIntervalSeconds * 1000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [refreshIntervalSeconds, historyLoaded]);
+    return () => { cancelled = true; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [engineSelectionReady, refreshIntervalSeconds, historyLoaded, selectedEngineId]);
 
   useEffect(() => {
+    if (!engineSelectionReady || loading || !snapshot) return;
     let cancelled = false;
+    let timer: number | undefined;
+    const controller = new AbortController();
+    setDockerDetailsLoading(true);
+    setDockerDetailsRequestError(false);
+    async function loadDockerDetails() {
+      try {
+        const response = await fetch(`/api/metrics?engineId=${encodeURIComponent(selectedEngineId)}&detailsOnly=1`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25_000)]) });
+        if (!response.ok) throw new Error("Docker details unavailable");
+        const details = await response.json() as Pick<HostMetrics, "dockerDisk" | "dockerDiskError" | "io" | "ioError" | "sampledAt">;
+        if (cancelled) return;
+        setMetrics((current) => current ? { ...current, ...details } : current);
+        setDockerDetailsRequestError(Boolean(details.dockerDiskError || details.ioError));
+        if (details.io) {
+          const sampledAt = Date.parse(details.sampledAt) || Date.now();
+          setHistory((current) => ({ ...current, io: appendIoSample(current.io, { ...details.io!, at: sampledAt }) }));
+        }
+      } catch {
+        if (!cancelled) setDockerDetailsRequestError(true);
+      } finally {
+        if (!cancelled) {
+          setDockerDetailsLoading(false);
+          timer = window.setTimeout(() => { if (document.visibilityState === "visible") void loadDockerDetails(); else timer = window.setTimeout(() => void loadDockerDetails(), 5000); }, Math.max(60, refreshIntervalSeconds) * 1000);
+        }
+      }
+    }
+    timer = window.setTimeout(() => void loadDockerDetails(), dockerDetailsRetry ? 0 : 500);
+    return () => { cancelled = true; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [dockerDetailsRetry, engineSelectionReady, loading, refreshIntervalSeconds, selectedEngineId, snapshot]);
+
+  useEffect(() => {
+    if (!engineSelectionReady || loading) {
+      setRemoteMetrics([]);
+      setRemoteMetricsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const controller = new AbortController();
+    const serversToPoll = remoteServers.filter((server) => server.id !== selectedEngineId);
+    setRemoteMetrics((current) => current.filter((item) => item.server.id !== selectedEngineId));
+    if (!serversToPoll.length) {
+      setRemoteMetrics([]);
+      setRemoteMetricsLoading(false);
+      return () => { cancelled = true; };
+    }
+    setRemoteMetricsLoading(true);
+    function scheduleNext() {
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        if (document.visibilityState === "visible") void loadRemoteMetrics();
+        else scheduleNext();
+      }, refreshIntervalSeconds * 1000);
+    }
+    async function loadRemoteMetrics() {
+      const results = await Promise.all(serversToPoll.map(async (server): Promise<RemoteMetric> => {
+        try {
+          const response = await fetch(`/api/metrics?engineId=${encodeURIComponent(server.id)}&hostOnly=1`, { cache: "no-store", signal: controller.signal });
+          if (!response.ok) throw new Error("Remote metrics unavailable");
+          return { server, metrics: await response.json() as HostMetrics, error: false };
+        } catch {
+          return { server, metrics: null, error: true };
+        }
+      }));
+      if (!cancelled) {
+        setRemoteMetrics(results);
+        setRemoteMetricsLoading(false);
+        scheduleNext();
+      }
+    }
+    void loadRemoteMetrics();
+    return () => { cancelled = true; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [engineSelectionReady, loading, remoteServers, refreshIntervalSeconds, selectedEngineId]);
+
+  useEffect(() => {
+    if (!engineSelectionReady) return;
+    let cancelled = false;
+    const controller = new AbortController();
     async function load() {
       setLoading(true);
       setError(false);
+      setEngineError(null);
+      setSnapshot(null);
       try {
-        const paths = ["/api/services", "/api/compose", "/api/resources?type=images", "/api/resources?type=volumes", "/api/resources?type=networks", "/api/resources?type=engine", "/api/projects"];
-        const results = await Promise.all(paths.map(async (path) => {
-          try {
-            const response = await fetch(path, { cache: "no-store" });
-            return response.ok ? await response.json() : null;
-          } catch { return null; }
-        }));
+        const engineQuery = `engineId=${encodeURIComponent(selectedEngineId)}`;
+        const response = await fetch(`/api/overview?${engineQuery}`, { cache: "no-store", signal: controller.signal });
+        const overview = await response.json();
         if (cancelled) return;
-        const [services, compose, images, volumes, networks, engine, workspaces] = results;
-        if (!services) { setSnapshot(null); setError(true); return; }
-        setSnapshot({
-          containers: services.data ?? [],
-          projects: compose?.data ?? [],
-          workspaces: workspaces?.data ?? [],
-          images: Array.isArray(images?.data) ? images.data.length : null,
-          volumes: Array.isArray(volumes?.data) ? volumes.data.length : null,
-          networks: Array.isArray(networks?.data) ? networks.data.length : null,
-          host: services.meta?.host ?? "",
-          engine: engine?.data ?? null,
-        });
+        if (!response.ok || !overview?.data) {
+          setSnapshot(null);
+          setError(true);
+          setEngineError(typeof overview?.error === "string" ? overview.error : null);
+          return;
+        }
+        setSnapshot(overview.data as Snapshot);
+        if (!overview.data.engine?.ComposeVersion) {
+          void fetch("/api/compose-version", { cache: "no-store", signal: controller.signal })
+            .then((versionResponse) => versionResponse.ok ? versionResponse.json() : null)
+            .then((versionData) => {
+              if (!cancelled && versionData?.version) {
+                setSnapshot((current) => current ? { ...current, engine: current.engine ? { ...current.engine, ComposeVersion: versionData.version } : current.engine } : current);
+              }
+            }).catch(() => undefined);
+        }
       } finally { if (!cancelled) setLoading(false); }
     }
     void load();
-    return () => { cancelled = true; };
-  }, [refreshIndex]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [engineSelectionReady, refreshIndex, selectedEngineId]);
 
   const running = snapshot?.containers.filter((container) => container.status === "running" || container.status === "unhealthy").length ?? 0;
   const stopped = snapshot?.containers.filter((container) => container.status === "stopped").length ?? 0;
@@ -306,6 +461,7 @@ export default function OverviewPage() {
   const statusTotal = running + stopped + paused;
   const runningAngle = statusTotal ? 360 * running / statusTotal : 0;
   const initialLoading = loading && snapshot === null;
+  const selectedRemoteServer = remoteServers.find((server) => server.id === selectedEngineId);
   const usage = [
     { id: "cpu", icon: Cpu, label: "CPU", value: metrics?.cpu.percent ?? null, detail: es ? "Uso del procesador" : "Processor utilization", samples: history.cpu },
     { id: "memory", icon: MemoryStick, label: es ? "Memoria" : "Memory", value: metrics ? percent(metrics.memory.used, metrics.memory.total) : null, detail: metrics ? `${formatSize(metrics.memory.used)} / ${formatSize(metrics.memory.total)}` : "—", samples: history.memory },
@@ -329,10 +485,11 @@ export default function OverviewPage() {
   ];
 
   return <main className="module-main overview-page">
-    <div className="overview-heading"><div><span className="overview-eyebrow">VESSEL / {es ? "RESUMEN" : "OVERVIEW"}</span><h1>{es ? "Tu espacio de trabajo" : "Your workspace"}</h1><p>{es ? "Una vista clara del estado de Docker. Entra a un proyecto o recurso cuando necesites operarlo." : "A clear view of Docker health. Open a project or resource when you need to manage it."}</p></div><button className="overview-refresh" type="button" disabled={loading} onClick={() => setRefreshIndex((value) => value + 1)}><RefreshCw size={16} className={loading ? "spinning" : ""} />{es ? "Actualizar" : "Refresh"}</button></div>
-    {error ? <div className="overview-error" role="alert"><Server size={22} /><div><strong>{es ? "Docker no está disponible" : "Docker is unavailable"}</strong><p>{es ? "No se pudo leer el estado de los contenedores. Revisa la conexión del backend y vuelve a intentar." : "Could not read container state. Check the backend connection and try again."}</p></div></div> : null}
-    {initialLoading ? <OverviewLoadingSkeleton variant="status" label={es ? "Cargando estado de Docker" : "Loading Docker status"} /> : <section className="overview-status" aria-label={es ? "Estado del entorno" : "Environment status"}>
-      <div className="overview-status-head"><span className="overview-status-icon"><Server size={20} /></span><div><strong>Docker Engine{snapshot?.engine?.ServerVersion ? ` · ${snapshot.engine.ServerVersion}` : ""}</strong><span>{snapshot?.engine?.Name || snapshot?.host ? `Host · ${snapshot.engine?.Name || snapshot.host}` : es ? "Host local" : "Local host"}</span></div><span className={`overview-health ${error ? "is-error" : ""}`}><i />{error ? (es ? "Sin conexión" : "Disconnected") : (es ? "Conectado" : "Connected")}</span></div>
+    <div className="overview-heading"><div><span className="overview-eyebrow">VESSEL / {es ? "RESUMEN" : "OVERVIEW"}</span><h1>{es ? "Tu espacio de trabajo" : "Your workspace"}</h1><p>{es ? "Una vista clara del estado de Docker. Entra a un proyecto o recurso cuando necesites manejarlo." : "A clear view of Docker health. Open a project or resource when you need to manage it."}</p></div><button className="overview-refresh" type="button" disabled={loading} onClick={() => setRefreshIndex((value) => value + 1)}><RefreshCw size={16} className={loading ? "spinning" : ""} />{es ? "Actualizar" : "Refresh"}</button></div>
+    <div className="overview-engine-select"><Server size={17} /><strong>Engine</strong><VesselSelect aria-label={es ? "Engine Docker activo" : "Active Docker Engine"} value={selectedEngineId} onChange={(event) => selectEngine(event.target.value)}><option value="local">{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id}>{server.name} · {server.host}</option>)}</VesselSelect></div>
+    {error ? <div className="overview-error" role="alert"><Server size={22} /><div><strong>{selectedRemoteServer ? (es ? `No se pudo conectar a ${selectedRemoteServer.name}` : `Could not connect to ${selectedRemoteServer.name}`) : es ? "Docker no está disponible" : "Docker is unavailable"}</strong><p>{engineError ?? (selectedRemoteServer ? (es ? `No se pudo leer el estado de Docker en ${selectedRemoteServer.host}. Verifica la conexión SSH y que el usuario tenga acceso al socket Docker.` : `Could not read Docker state from ${selectedRemoteServer.host}. Check SSH connectivity and the user's access to the Docker socket.`) : es ? "No se pudo leer el estado de los contenedores. Revisa la conexión del backend y vuelve a intentar." : "Could not read container state. Check the backend connection and try again.")}</p></div></div> : null}
+    {initialLoading ? <OverviewLoadingSkeleton variant="status" label={es ? "Cargando estado de Docker" : "Loading Docker status"} /> : error ? null : <section className="overview-status" aria-label={es ? "Estado del entorno" : "Environment status"}>
+      <div className="overview-status-head"><span className="overview-status-icon"><Server size={20} /></span><div><strong>Docker Engine{snapshot?.engine?.ServerVersion ? ` · ${snapshot.engine.ServerVersion}` : ""}</strong><span>{snapshot?.engine?.Name || snapshot?.host ? `Host · ${snapshot.engine?.Name || snapshot.host}` : selectedRemoteServer ? `Host · ${selectedRemoteServer.host}` : es ? "Host local" : "Local host"}</span></div><span className={`overview-health ${error ? "is-error" : ""}`}><i />{error ? (es ? "Sin conexión" : "Disconnected") : (es ? "Conectado" : "Connected")}</span></div>
       <div className={`docker-update-check ${dockerUpdateLoading ? "is-checking" : ""} ${dockerUpdateError ? "is-error" : dockerUpdate?.updateAvailable ? "has-update" : "is-current"}`}>
         <span className="docker-update-check-icon">{dockerUpdateLoading && !dockerUpdate ? <RefreshCw size={17} className="spinning" /> : dockerUpdateError ? <CircleAlert size={17} /> : dockerUpdate?.updateAvailable ? <ArrowDownToLine size={17} /> : <CircleCheck size={17} />}</span>
         <div className="docker-update-copy">
@@ -353,11 +510,32 @@ export default function OverviewPage() {
     <div className="overview-section-title overview-metrics-heading"><div><h2><Activity size={19} />{es ? "Uso del equipo" : "Host usage"}</h2><p>{es ? "Tendencia de CPU y memoria. El almacenamiento muestra capacidad usada y disponible." : "CPU and memory trends. Storage shows used and available capacity."}<small>{es ? "El historial se recopila mientras el resumen está abierto y se conserva en este navegador por 24 horas." : "History is collected while Overview is open and kept in this browser for 24 hours."}</small></p></div><div className="overview-range-control" role="group" aria-label={es ? "Rango del historial" : "History range"}>{(["15m", "1h", "6h", "24h"] as HistoryRange[]).map((range) => <button type="button" key={range} className={historyRange === range ? "active" : ""} aria-pressed={historyRange === range} onClick={() => setHistoryRange(range)}>{range === "15m" ? (es ? "15 min" : "15 min") : range === "1h" ? "1 h" : range === "6h" ? "6 h" : "24 h"}</button>)}</div></div>
     {metricsLoading ? <OverviewLoadingSkeleton variant="usage" label={es ? "Cargando métricas del equipo" : "Loading host metrics"} /> : <section className="overview-usage-grid" aria-label={es ? "Métricas del equipo" : "Host metrics"}>{usage.map(({ id, icon: Icon, label, value, detail, samples }) => <article className={`overview-usage-card usage-${id}`} key={id}><div className="overview-usage-head"><span><Icon size={21} />{label}</span><span className="usage-live-status">{metrics ? <><i />{sampleAge(Date.parse(metrics.sampledAt) || Date.now(), es)}</> : (es ? "Sin dato" : "No data")}</span></div><div className="overview-metric-reading"><strong>{value == null ? "—" : value.toFixed(1)}<small>{value == null ? "" : "%"}</small></strong><span>{detail}</span></div>{id === "disk" ? <StorageCapacity metrics={metrics} value={value} es={es} /> : <Trend samples={samples} label={label} es={es} range={historyRange} />}</article>)}</section>}
     <div className="overview-section-title overview-io-heading"><div><h2><Activity size={19} />{es ? "Almacenamiento y actividad Docker" : "Docker storage & activity"}</h2><p>{es ? "Uso informado por Docker y contadores acumulados de los contenedores en ejecución." : "Usage reported by Docker and cumulative counters from running containers."}</p></div></div>
-    {metricsLoading ? <OverviewLoadingSkeleton variant="usage" label={es ? "Cargando actividad Docker" : "Loading Docker activity"} /> : <section className="overview-io-grid" aria-label={es ? "Almacenamiento y actividad Docker" : "Docker storage and activity"}>
-      <DockerDiskUsage disk={metrics?.dockerDisk ?? null} es={es} />
-      <article className="overview-io-card"><div className="overview-io-card-head"><span className="overview-io-icon"><HardDrive size={18} /></span><div><h3>{es ? "Block I/O" : "Block I/O"}</h3><p>{es ? "Lectura y escritura acumuladas de contenedores activos." : "Cumulative reads and writes from running containers."}</p></div><span className="overview-io-live">{metrics?.io ? `${metrics.io.containers} ${es ? "activos" : "active"}` : "—"}</span></div>{metrics?.io ? <><div className="overview-io-total-row"><span>{es ? "Leído" : "Read"}<strong>{formatIoSize(metrics.io.blockRead)}</strong></span><span>{es ? "Escrito" : "Write"}<strong>{formatIoSize(metrics.io.blockWrite)}</strong></span></div><IoHistoryChart samples={history.io} firstKey="blockRead" secondKey="blockWrite" firstLabel={es ? "Lectura" : "Read"} secondLabel={es ? "Escritura" : "Write"} es={es} range={historyRange} /></> : <div className="overview-metrics-unavailable">{es ? "No se recibieron contadores Block I/O del Engine." : "No Block I/O counters were returned by the Engine."}</div>}</article>
-      <article className="overview-io-card"><div className="overview-io-card-head"><span className="overview-io-icon"><Network size={18} /></span><div><h3>{es ? "Network I/O" : "Network I/O"}</h3><p>{es ? "Tráfico acumulado de contenedores activos." : "Cumulative traffic from running containers."}</p></div><span className="overview-io-live">{metrics?.io ? `${metrics.io.containers} ${es ? "activos" : "active"}` : "—"}</span></div>{metrics?.io ? <><div className="overview-io-total-row"><span>{es ? "Entrada" : "In"}<strong>{formatIoSize(metrics.io.networkIn)}</strong></span><span>{es ? "Salida" : "Out"}<strong>{formatIoSize(metrics.io.networkOut)}</strong></span></div><IoHistoryChart samples={history.io} firstKey="networkIn" secondKey="networkOut" firstLabel={es ? "Entrada" : "In"} secondLabel={es ? "Salida" : "Out"} es={es} range={historyRange} /></> : <div className="overview-metrics-unavailable">{es ? "No se recibieron contadores de red del Engine." : "No network counters were returned by the Engine."}</div>}</article>
+    {dockerDetailsLoading && !metrics?.dockerDisk && !metrics?.io ? <OverviewLoadingSkeleton variant="usage" label={es ? "Consultando almacenamiento y actividad Docker" : "Loading Docker storage and activity"} /> : <section className="overview-io-grid" aria-label={es ? "Almacenamiento y actividad Docker" : "Docker storage and activity"}>
+      <DockerDiskUsage disk={metrics?.dockerDisk ?? null} error={metrics?.dockerDiskError ?? null} es={es} />
+      <article className="overview-io-card"><div className="overview-io-card-head"><span className="overview-io-icon"><HardDrive size={18} /></span><div><h3>{es ? "Block I/O" : "Block I/O"}</h3><p>{es ? "Lectura y escritura acumuladas de contenedores activos." : "Cumulative reads and writes from running containers."}</p></div><span className="overview-io-live">{metrics?.io ? `${metrics.io.containers} ${es ? "activos" : "active"}` : "—"}</span></div>{metrics?.io ? <><div className="overview-io-total-row"><span>{es ? "Leído" : "Read"}<strong>{formatIoSize(metrics.io.blockRead)}</strong></span><span>{es ? "Escrito" : "Write"}<strong>{formatIoSize(metrics.io.blockWrite)}</strong></span></div>{metrics.io.failedContainers > 0 ? <div className="overview-metrics-unavailable">{es ? `${metrics.io.failedContainers} contenedor(es) no devolvieron estadísticas.` : `${metrics.io.failedContainers} container(s) did not return statistics.`}</div> : null}<IoHistoryChart samples={history.io} firstKey="blockRead" secondKey="blockWrite" firstLabel={es ? "Lectura" : "Read"} secondLabel={es ? "Escritura" : "Write"} es={es} range={historyRange} /></> : <div className="overview-metrics-unavailable">{metrics?.ioError ? `${es ? "No se pudo consultar Block I/O:" : "Could not read Block I/O:"} ${metrics.ioError}` : dockerDetailsLoading ? es ? "Consultando contadores del Engine…" : "Reading Engine counters…" : es ? "No se recibieron contadores Block I/O del Engine." : "No Block I/O counters were returned by the Engine."}</div>}</article>
+      <article className="overview-io-card"><div className="overview-io-card-head"><span className="overview-io-icon"><Network size={18} /></span><div><h3>{es ? "Network I/O" : "Network I/O"}</h3><p>{es ? "Tráfico acumulado de contenedores activos." : "Cumulative traffic from running containers."}</p></div><span className="overview-io-live">{metrics?.io ? `${metrics.io.containers} ${es ? "activos" : "active"}` : "—"}</span></div>{metrics?.io ? <><div className="overview-io-total-row"><span>{es ? "Entrada" : "In"}<strong>{formatIoSize(metrics.io.networkIn)}</strong></span><span>{es ? "Salida" : "Out"}<strong>{formatIoSize(metrics.io.networkOut)}</strong></span></div>{metrics.io.failedContainers > 0 ? <div className="overview-metrics-unavailable">{es ? `${metrics.io.failedContainers} contenedor(es) no devolvieron estadísticas.` : `${metrics.io.failedContainers} container(s) did not return statistics.`}</div> : null}<IoHistoryChart samples={history.io} firstKey="networkIn" secondKey="networkOut" firstLabel={es ? "Entrada" : "In"} secondLabel={es ? "Salida" : "Out"} es={es} range={historyRange} /></> : <div className="overview-metrics-unavailable">{metrics?.ioError ? `${es ? "No se pudo consultar Network I/O:" : "Could not read Network I/O:"} ${metrics.ioError}` : dockerDetailsLoading ? es ? "Consultando contadores del Engine…" : "Reading Engine counters…" : es ? "No se recibieron contadores de red del Engine." : "No network counters were returned by the Engine."}</div>}</article>
     </section>}
+    {dockerDetailsRequestError && !dockerDetailsLoading ? <div className="overview-metrics-retry" role="status"><span>{es ? "No fue posible completar la consulta de actividad Docker." : "Could not finish loading Docker activity."}</span><button type="button" onClick={() => { setDockerDetailsLoading(true); setDockerDetailsRetry((value) => value + 1); }}>{es ? "Reintentar" : "Retry"}<RefreshCw size={14} /></button></div> : null}
+    {remoteServers.length ? <>
+      <div className="overview-section-title overview-remote-heading"><div><h2><Server size={19} />{es ? "Servidores registrados" : "Registered servers"}</h2><p>{es ? "Métricas recientes de los Engines conectados por SSH." : "Recent metrics from Engines connected over SSH."}</p></div><Link href="/servers">{es ? "Administrar servidores" : "Manage servers"}<ArrowRight size={16} /></Link></div>
+      <section className="overview-remote-host-grid" aria-label={es ? "Métricas de servidores registrados" : "Registered server metrics"}>
+        {remoteServers.map((server) => {
+          const result = remoteMetrics.find((item) => item.server.id === server.id);
+          const remote = server.id === selectedEngineId ? metrics : result?.metrics;
+          const unavailable = server.id === selectedEngineId ? !metrics && !metricsLoading : result?.error;
+          const checking = server.id === selectedEngineId ? metricsLoading : remoteMetricsLoading && !result;
+          const values = [
+            { label: "CPU", value: remote?.cpu.percent ?? null, detail: remote ? `${remote.cpu.percent.toFixed(1)}%` : "—" },
+            { label: es ? "Memoria" : "Memory", value: remote ? percent(remote.memory.used, remote.memory.total) : null, detail: remote ? `${formatSize(remote.memory.used)} / ${formatSize(remote.memory.total)}` : "—" },
+            { label: es ? "Disco raíz" : "Root disk", value: remote ? percent(remote.disk.used, remote.disk.total) : null, detail: remote ? `${formatSize(remote.disk.used)} / ${formatSize(remote.disk.total)}` : "—" },
+          ];
+          return <article className="overview-remote-host-card" key={server.id}>
+            <header><span className="overview-remote-host-icon"><Server size={18} /></span><div><strong>{server.name}</strong><small>{server.host}</small></div><span className={`overview-remote-host-status${unavailable ? " is-error" : remote ? " is-connected" : ""}`}><i />{checking ? (es ? "Consultando…" : "Checking…") : unavailable ? (es ? "Métricas no disponibles" : "Metrics unavailable") : remote ? sampleAge(Date.parse(remote.sampledAt) || Date.now(), es) : (es ? "Esperando métricas" : "Waiting for metrics")}</span></header>
+            {unavailable ? <p className="overview-remote-host-error">{es ? "No se pudieron leer las métricas del host. La conexión Docker puede seguir activa." : "Host metrics could not be read. The Docker connection may still be active."}</p> : checking && !remote ? <div className="overview-remote-metric-skeleton" aria-label={es ? "Cargando métricas" : "Loading metrics"}><i /><i /><i /></div> : <div className="overview-remote-metric-grid">{values.map(({ label, value, detail }) => <div key={label}><span>{label}</span><strong>{detail}</strong><i><b style={{ width: `${value ?? 0}%` }} /></i></div>)}</div>}
+          </article>;
+        })}
+      </section>
+    </> : null}
     <div className="overview-section-title"><div><h2><Container size={19} />{es ? "Explorar recursos" : "Explore resources"}</h2><p>{es ? "Cada sección tiene su propio espacio de gestión." : "Each section has its own management workspace."}</p></div></div>
     {initialLoading ? <OverviewLoadingSkeleton variant="resources" label={es ? "Cargando recursos" : "Loading resources"} /> : <section className="overview-resource-grid" aria-label={es ? "Recursos Docker" : "Docker resources"}>{counts.map(({ href, icon: Icon, label, value }) => <Link className="overview-resource" href={href} key={href}><span className="overview-resource-icon"><Icon size={21} /></span><strong>{value == null ? "—" : value}</strong><span>{label}</span><ArrowRight className="overview-resource-arrow" size={17} /></Link>)}</section>}
     <div className="overview-section-title project-title"><div><h2><FolderKanban size={19} />{es ? "Proyectos" : "Projects"}</h2><p>{es ? "Espacios de trabajo para organizar servicios relacionados." : "Workspaces for organizing related services."}</p></div><Link href="/projects">{es ? "Ver proyectos" : "View projects"}<ArrowRight size={16} /></Link></div>
