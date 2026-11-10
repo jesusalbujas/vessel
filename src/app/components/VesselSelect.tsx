@@ -3,7 +3,7 @@
 import { Children, isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
-type OptionProps = { value?: string | number; disabled?: boolean; children?: ReactNode };
+type OptionProps = { value?: string | number; disabled?: boolean; children?: ReactNode; "data-status"?: "online" | "offline" | "checking"; "data-status-label"?: string };
 type Props = {
   value: string | number;
   onChange: (event: { target: { value: string } }) => void;
@@ -21,7 +21,7 @@ export default function VesselSelect({ value, onChange, children, disabled = fal
   const button = useRef<HTMLButtonElement>(null);
   const options = useMemo(() => Children.toArray(children).flatMap((child) => {
     if (!isValidElement<OptionProps>(child) || child.type !== "option") return [];
-    return [{ value: String(child.props.value ?? ""), label: child.props.children, disabled: Boolean(child.props.disabled) }];
+    return [{ value: String(child.props.value ?? ""), label: child.props.children, disabled: Boolean(child.props.disabled), status: child.props["data-status"], statusLabel: child.props["data-status-label"] }];
   }), [children]);
   const selected = Math.max(0, options.findIndex((option) => option.value === String(value)));
 
@@ -43,7 +43,7 @@ export default function VesselSelect({ value, onChange, children, disabled = fal
   }
 
   return <div className={`vessel-select ${className}`.trim()} ref={root}>
-    <button ref={button} type="button" className="vessel-select-trigger" aria-haspopup="listbox" aria-expanded={open} disabled={disabled} {...ariaProps}
+    <button ref={button} type="button" className={`vessel-select-trigger${options[selected]?.status === "offline" ? " is-unavailable" : ""}`} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} {...ariaProps}
       onClick={() => setOpen((current) => !current)}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -55,14 +55,19 @@ export default function VesselSelect({ value, onChange, children, disabled = fal
         else if (event.key === "Home" && open) { event.preventDefault(); setActive(0); }
         else if (event.key === "End" && open) { event.preventDefault(); setActive(options.length - 1); }
       }}>
-      <span className="vessel-select-value">{options[selected]?.label ?? "—"}</span>
+      <span className={`vessel-select-value${options[selected]?.status === "offline" ? " is-unavailable" : ""}`}>
+        {options[selected]?.status ? <i className={`vessel-select-status-dot is-${options[selected].status}`} aria-label={options[selected].status === "offline" ? "Unavailable" : options[selected].status === "online" ? "Online" : "Checking"} /> : null}
+        {options[selected]?.label ?? "—"}
+      </span>
       <ChevronDown size={16} aria-hidden="true" className={open ? "is-open" : undefined} />
     </button>
     {open ? <div className="vessel-select-menu" role="listbox" aria-label={ariaProps["aria-label"]}>
       {options.map((option, index) => <button type="button" role="option" aria-selected={option.value === String(value)} disabled={option.disabled} key={`${option.value}-${index}`}
-        className={`vessel-select-option${option.value === String(value) ? " is-selected" : ""}${active === index ? " is-active" : ""}`}
+        className={`vessel-select-option${option.value === String(value) ? " is-selected" : ""}${active === index ? " is-active" : ""}${option.status === "offline" ? " is-unavailable" : ""}`}
         onMouseEnter={() => setActive(index)} onClick={() => choose(index)}>
-        <span>{option.label}</span>{option.value === String(value) ? <Check size={15} aria-hidden="true" /> : <span className="vessel-select-check-space" />}
+        <span className="vessel-select-option-label">{option.status ? <i className={`vessel-select-status-dot is-${option.status}`} aria-hidden="true" /> : null}{option.label}</span>
+        {option.status === "offline" ? <small>{option.statusLabel ?? "Unavailable"}</small> : null}
+        {option.value === String(value) ? <Check size={15} aria-hidden="true" /> : <span className="vessel-select-check-space" />}
       </button>)}
     </div> : null}
   </div>;

@@ -2,18 +2,41 @@ import { NextRequest, NextResponse } from "next/server";
 
 const publicPaths = new Set(["/login", "/favicon.svg", "/fonts/outfit-latin.woff2"]);
 
+function makeNonce() {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const isPage = !pathname.startsWith("/api/") && !pathname.startsWith("/_next/");
+  const nonce = isPage ? makeNonce() : "";
+  const reportOnlyCsp = nonce
+    ? `default-src 'self'; img-src 'self' data: https://gravatar.com https://*.gravatar.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-${nonce}' 'strict-dynamic'; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self' https:`
+    : "";
   const addSecurityHeaders = (response: NextResponse) => {
     response.headers.set("X-Content-Type-Options", "nosniff");
     response.headers.set("X-Frame-Options", "DENY");
     response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
     response.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     response.headers.set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https://gravatar.com https://*.gravatar.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self' https:");
+    if (reportOnlyCsp) response.headers.set("Content-Security-Policy-Report-Only", reportOnlyCsp);
     try {
       if (process.env.VESSEL_PUBLIC_URL && new URL(process.env.VESSEL_PUBLIC_URL).protocol === "https:") response.headers.set("Strict-Transport-Security", "max-age=15552000");
     } catch { /* Invalid public URL is handled by the corresponding configuration flow. */ }
     return response;
+  };
+  const continueRequest = () => {
+    if (!nonce) return addSecurityHeaders(NextResponse.next());
+    // Next reads the request CSP to add the nonce to framework-generated scripts.
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("Content-Security-Policy", reportOnlyCsp);
+    requestHeaders.set("Content-Security-Policy-Report-Only", reportOnlyCsp);
+    requestHeaders.set("x-nonce", nonce);
+    return addSecurityHeaders(NextResponse.next({ request: { headers: requestHeaders } }));
   };
   const isWebhook = pathname.startsWith("/api/webhooks/");
   const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase());
@@ -47,9 +70,9 @@ export function proxy(request: NextRequest) {
       return addSecurityHeaders(NextResponse.json({ error: "Cross-origin request denied" }, { status: 403, headers: { "Cache-Control": "private, no-store", Vary: "Origin, Cookie" } }));
     }
   }
-  if (publicPaths.has(pathname) || pathname.startsWith("/_next/") || pathname.startsWith("/api/auth")) return addSecurityHeaders(NextResponse.next());
-  if (isWebhook) return addSecurityHeaders(NextResponse.next());
-  if (/^\/api\/git-providers\/[^/]+\/(callback|connect)$/.test(pathname)) return addSecurityHeaders(NextResponse.next());
+  if (publicPaths.has(pathname) || pathname.startsWith("/_next/") || pathname.startsWith("/api/auth")) return continueRequest();
+  if (isWebhook) return continueRequest();
+  if (/^\/api\/git-providers\/[^/]+\/(callback|connect)$/.test(pathname)) return continueRequest();
   if (!request.cookies.has("vessel-token")) {
     if (pathname.startsWith("/api/")) {
       return addSecurityHeaders(NextResponse.json(
@@ -62,7 +85,7 @@ export function proxy(request: NextRequest) {
     login.searchParams.set("returnTo", pathname);
     return addSecurityHeaders(NextResponse.redirect(login));
   }
-  return addSecurityHeaders(NextResponse.next());
+  return continueRequest();
 }
 
 export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };

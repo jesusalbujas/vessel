@@ -133,6 +133,14 @@ Abre [http://127.0.0.1:55300](http://127.0.0.1:55300). Vessel guarda sus metadat
 
 El puerto web se enlaza a `127.0.0.1` de forma predeterminada. Para publicar Vessel detrás de un proxy inverso HTTPS confiable, configura `VESSEL_BIND_ADDRESS=0.0.0.0` y limita el puerto del host en el firewall para que solo sea accesible a través de ese proxy. El socket Docker otorga control del host; concede acceso a Vessel solo en equipos y a administradores de confianza.
 
+### Imagen Docker y versiones etiquetadas
+
+El Dockerfile mantenido está en `docker/Dockerfile`; también se incluye `docker/compose.yaml` para desplegar Vessel con un Compose autocontenido. Los Compose de la raíz utilizan el mismo Dockerfile.
+
+Para publicar en Docker Hub, agrega los secretos de Actions `DOCKERHUB_USERNAME` y `DOCKERHUB_TOKEN` al repositorio y sube un tag de versión, por ejemplo `v0.31.0`. El flujo `publish.yaml` compila `DOCKERHUB_USERNAME/vessel` para `linux/amd64` y `linux/arm64` y publica el tag de lanzamiento, los tags semánticos y `latest`. La versión mostrada en Vessel se compila desde ese tag. `ci.yaml` verifica los tipos y compila en los pushes y pull requests dirigidos a `main` o `master`.
+
+Para compilar con el Compose del directorio Docker, ejecuta `docker compose -f docker/compose.yaml up -d --build` desde la raíz del repositorio. Configura `VESSEL_VERSION` en `.env` solo si quieres que una compilación local muestre una versión distinta a la de `package.json`.
+
 ### Desarrollo con recarga en caliente
 
 ```bash

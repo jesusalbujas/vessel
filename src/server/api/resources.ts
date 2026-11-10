@@ -106,19 +106,45 @@ export async function deleteResources(request: Request) {
   }
   const imageIds = [...new Set((body.imageIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0))];
   if (!imageIds.length) return NextResponse.json({ error: "No se seleccionaron imágenes" }, { status: 400 });
-  try {
-    const [images, containers] = await Promise.all([listDockerImages(), listDockerContainers()]);
-    const known = new Set(images.map((image) => image.Id));
-    const unknown = imageIds.filter((id) => !known.has(id));
-    if (unknown.length) return NextResponse.json({ error: "Una o más imágenes ya no existen; actualiza la lista" }, { status: 409 });
-    const used = containers.flatMap((container) => {
-      const imageId = container.ImageID ?? "";
-      return imageIds.includes(imageId) ? [{ imageId, container: (container.Names?.[0] ?? container.Id.slice(0, 12)).replace(/^\//, "") }] : [];
-    });
-    if (used.length) return NextResponse.json({ error: "No se puede borrar: hay imágenes en uso por contenedores", used }, { status: 409 });
-    for (const imageId of imageIds) await deleteDockerImage(imageId);
-    return NextResponse.json({ ok: true, deleted: imageIds });
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "No fue posible borrar las imágenes" }, { status: 502 });
-  }
+  if (imageIds.length > 1000) return NextResponse.json({ error: "Puedes borrar hasta 1000 imágenes por operación" }, { status: 400 });
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      const send = (event: Record<string, unknown>) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      const deleted: string[] = [];
+      try {
+        send({ type: "checking", total: imageIds.length, message: "Verificando referencias de contenedores" });
+        const [images, containers] = await Promise.all([listDockerImages(), listDockerContainers()]);
+        const known = new Set(images.map((image) => image.Id));
+        const unknown = imageIds.filter((id) => !known.has(id));
+        if (unknown.length) {
+          send({ type: "error", error: "Una o más imágenes ya no existen; actualiza la lista", unknown });
+          return;
+        }
+        const selected = new Set(imageIds);
+        const used = containers.flatMap((container) => {
+          const imageId = container.ImageID ?? "";
+          return selected.has(imageId) ? [{ imageId, container: (container.Names?.[0] ?? container.Id.slice(0, 12)).replace(/^\//, "") }] : [];
+        });
+        if (used.length) {
+          send({ type: "error", error: "No se puede borrar: hay imágenes en uso por contenedores", used });
+          return;
+        }
+        send({ type: "ready", total: imageIds.length });
+        for (const [index, imageId] of imageIds.entries()) {
+          const current = index + 1;
+          send({ type: "item", current, total: imageIds.length, imageId, completed: deleted.length, percent: Math.floor((deleted.length / imageIds.length) * 100) });
+          await deleteDockerImage(imageId);
+          deleted.push(imageId);
+          send({ type: "progress", current, total: imageIds.length, imageId, completed: deleted.length, percent: Math.round((deleted.length / imageIds.length) * 100) });
+        }
+        send({ type: "done", total: imageIds.length, completed: deleted.length, percent: 100, deleted });
+      } catch (error) {
+        send({ type: "error", error: error instanceof Error ? error.message : "No fue posible borrar las imágenes", completed: deleted.length, total: imageIds.length, percent: Math.floor((deleted.length / imageIds.length) * 100), deleted });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new NextResponse(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "private, no-store, no-transform", "X-Accel-Buffering": "no" } });
 }

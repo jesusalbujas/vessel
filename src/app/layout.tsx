@@ -12,6 +12,9 @@ export const metadata: Metadata = {
   },
 };
 
+// A per-request CSP nonce cannot be attached to statically prerendered scripts.
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <html lang="en"><body><I18nProvider><AppFrame>{children}</AppFrame></I18nProvider></body></html>;
 }

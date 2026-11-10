@@ -19,6 +19,8 @@ COPY backend/main.go ./backend/main.go
 FROM node:22-alpine AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG VESSEL_VERSION
+ENV NEXT_PUBLIC_VESSEL_VERSION=${VESSEL_VERSION}
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build \

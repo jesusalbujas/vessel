@@ -16,6 +16,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
   const [themeReady, setThemeReady] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [remoteServers, setRemoteServers] = useState<Array<{ id: string; name: string; host: string }>>([]);
+  const [engineAvailability, setEngineAvailability] = useState<Record<string, "online" | "offline">>({});
   const [engineId, setEngineId] = useState("local");
   const [localEngineName, setLocalEngineName] = useState("Engine Local");
   const [engineSwitching, setEngineSwitching] = useState(false);
@@ -70,6 +71,15 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(VESSEL_NOTICE_EVENT, showNotice);
   }, []);
   useEffect(() => {
+    const handleEngineConnectivity = (event: Event) => {
+      const detail = (event as CustomEvent<{ engineId?: string; online?: boolean }>).detail;
+      if (!detail?.engineId || typeof detail.online !== "boolean") return;
+      setEngineAvailability((current) => ({ ...current, [detail.engineId!]: detail.online ? "online" : "offline" }));
+    };
+    window.addEventListener("vessel-engine-connectivity", handleEngineConnectivity);
+    return () => window.removeEventListener("vessel-engine-connectivity", handleEngineConnectivity);
+  }, []);
+  useEffect(() => {
     const handleEngineChange = (event: Event) => {
       const nextEngineId = (event as CustomEvent<string>).detail;
       if (!nextEngineId) return;
@@ -102,13 +112,13 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
     <Sidebar engineLabel={engineLabel} />
     <div className="app-view">
       <div className="app-utilities">
-        <div className="app-engine-switcher"><span><Server size={16} />Engine</span><VesselSelect aria-label={language === "es" ? "Engine Docker activo" : "Active Docker Engine"} value={engineId} onChange={(event) => selectEngine(event.target.value)}><option value="local">{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id}>{server.name} · {server.host}</option>)}</VesselSelect></div>
+        <div className="app-engine-switcher"><span><Server size={16} />Engine</span><VesselSelect aria-label={language === "es" ? "Engine Docker activo" : "Active Docker Engine"} value={engineId} onChange={(event) => selectEngine(event.target.value)}><option value="local" data-status={engineAvailability.local} data-status-label={language === "es" ? "Sin conexión" : "Unavailable"}>{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id} data-status={engineAvailability[server.id]} data-status-label={language === "es" ? "Sin conexión" : "Unavailable"}>{server.name} · {server.host}</option>)}</VesselSelect></div>
         <div className="app-utility-actions">
           <button type="button" onClick={() => setDark((value) => !value)} aria-label={dark ? (language === "es" ? "Modo claro" : "Light mode") : (language === "es" ? "Modo oscuro" : "Dark mode")}><span>{dark ? <Sun size={17} /> : <Moon size={17} />}</span>{dark ? (language === "es" ? "Claro" : "Light") : (language === "es" ? "Oscuro" : "Dark")}</button>
           <button type="button" onClick={() => setLanguage(language === "es" ? "en" : "es")} aria-label={language === "es" ? "Change to English" : "Cambiar a español"}><Languages size={17} />{language.toUpperCase()}</button>
         </div>
       </div>
-      {engineSwitching ? <div className="app-engine-switch-status" role="status" aria-live="polite"><LoaderCircle size={16} className="spinning" /><span>{language === "es" ? `Cambiando al Engine ${engineLabel}…` : `Switching to ${engineLabel} Engine…`}</span></div> : null}
+      {engineSwitching ? <div className="app-engine-switch-status" role="status" aria-live="polite"><LoaderCircle size={16} className="spinning" /><span>{language === "es" ? `Cambiando a ${engineLabel}…` : selectedServer ? `Switching to ${engineLabel} Engine…` : `Switching to ${engineLabel}…`}</span></div> : null}
       <div key={`${pathname.startsWith("/jobs") ? "/jobs-workspace" : pathname}:${engineId}`} className="app-page-transition">
         {pathname.startsWith("/jobs") ? <div key={pathname} className="vessel-run-tab-transition">{children}</div> : children}
       </div>

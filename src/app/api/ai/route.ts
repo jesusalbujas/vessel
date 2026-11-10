@@ -1,4 +1,5 @@
 import { getAISettings, postAISettings } from "@/server/api/ai";
+import { withAudit } from "@/lib/audit-log";
 
 export const GET = getAISettings;
-export const POST = postAISettings;
+export const POST = (request: Request) => withAudit(request, postAISettings, "ai-settings");

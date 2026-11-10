@@ -1,6 +1,10 @@
 services:
   service-portal:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        VESSEL_VERSION: ${VESSEL_VERSION:-}
     container_name: vessel
     restart: unless-stopped
     ports:

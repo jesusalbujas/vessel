@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, LayoutGrid, List, MoreHorizontal, SlidersHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, LayoutGrid, List, MoreHorizontal, SlidersHorizontal } from "lucide-react";
 import type { ContainerRuntimeSettings, RestartPolicy, Service, ServiceCategory, ServiceStatus } from "@/lib/services";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { notifyVessel } from "./ToastNotice";
@@ -81,6 +81,18 @@ function Icon({ name, size = 17 }: { name: IconName; size?: number }) {
 
 type FilterOption = { value: string; label: string; icon?: IconName };
 type ContainerSortColumn = "name" | "status" | "compose" | "image" | "port" | "database" | "created" | "ip" | "ports" | "managedBy";
+const INVENTORY_PAGE_SIZE = 25;
+
+function InventoryPagination({ page, total, onPageChange, language }: { page: number; total: number; onPageChange: (page: number) => void; language: "es" | "en" }) {
+  const pageCount = Math.max(1, Math.ceil(total / INVENTORY_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const first = total === 0 ? 0 : (safePage - 1) * INVENTORY_PAGE_SIZE + 1;
+  const last = Math.min(safePage * INVENTORY_PAGE_SIZE, total);
+  return <nav className="inventory-pagination" aria-label={language === "es" ? "Paginación" : "Pagination"}>
+    <span>{language === "es" ? `Mostrando ${first}–${last} de ${total}` : `Showing ${first}–${last} of ${total}`}</span>
+    <div><button type="button" onClick={() => onPageChange(safePage - 1)} disabled={safePage <= 1} aria-label={language === "es" ? "Página anterior" : "Previous page"}><ChevronLeft size={16} />{language === "es" ? "Anterior" : "Previous"}</button><span>{language === "es" ? `Página ${safePage} de ${pageCount}` : `Page ${safePage} of ${pageCount}`}</span><button type="button" onClick={() => onPageChange(safePage + 1)} disabled={safePage >= pageCount} aria-label={language === "es" ? "Página siguiente" : "Next page"}>{language === "es" ? "Siguiente" : "Next"}<ChevronRight size={16} /></button></div>
+  </nav>;
+}
 
 function CustomSelect({ label, value, options, onChange, icon }: { label: string; value: string; options: FilterOption[]; onChange: (value: string) => void; icon?: IconName }) {
   const [open, setOpen] = useState(false);
@@ -147,6 +159,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   const [query, setQuery] = useState("");
   const [environment, setEnvironment] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [containerPage, setContainerPage] = useState(1);
   const [view, setView] = useState<"containers" | "images" | "volumes" | "networks">(initialView);
   const [containerLayout, setContainerLayout] = useState<"cards" | "table">("cards");
   const [containerColumnsOpen, setContainerColumnsOpen] = useState(false);
@@ -160,15 +173,18 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   const [images, setImages] = useState<ImageResource[]>([]);
   const [imageQuery, setImageQuery] = useState("");
   const [imageFilter, setImageFilter] = useState("all");
+  const [imagePage, setImagePage] = useState(1);
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
   const [imageDeleteConfirm, setImageDeleteConfirm] = useState(false);
   const [imageDeleting, setImageDeleting] = useState(false);
+  const [imageDeleteProgress, setImageDeleteProgress] = useState<{ phase: "checking" | "deleting" | "completed" | "failed"; current: number; total: number; completed: number; percent: number; imageId?: string; error?: string } | null>(null);
   const [imagePullName, setImagePullName] = useState("");
   const [imagePullRegistry, setImagePullRegistry] = useState("docker-hub");
   const [registries, setRegistries] = useState<RegistryOption[]>([]);
   const [volumes, setVolumes] = useState<VolumeResource[]>([]);
   const [volumeQuery, setVolumeQuery] = useState("");
   const [volumeUsageFilter, setVolumeUsageFilter] = useState("all");
+  const [volumePage, setVolumePage] = useState(1);
   const [createVolumeOpen, setCreateVolumeOpen] = useState(false);
   const [createVolumeName, setCreateVolumeName] = useState("");
   const [volumeCreating, setVolumeCreating] = useState(false);
@@ -333,22 +349,64 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   }
 
   async function deleteSelectedImages() {
+    const imageIds = [...selectedImages];
+    if (!imageIds.length || imageDeleting) return;
     setImageDeleting(true);
+    setImageDeleteProgress({ phase: "checking", current: 0, total: imageIds.length, completed: 0, percent: 0 });
+    let failure = "";
+    let deletedIds: string[] = [];
+    const handleEvent = (event: { type?: string; total?: number; current?: number; completed?: number; percent?: number; imageId?: string; error?: string; used?: { container?: string }[]; deleted?: string[] }) => {
+      if (event.type === "checking") {
+        setImageDeleteProgress({ phase: "checking", current: 0, total: event.total ?? imageIds.length, completed: 0, percent: 0 });
+      } else if (event.type === "ready") {
+        setImageDeleteProgress({ phase: "deleting", current: 0, total: event.total ?? imageIds.length, completed: 0, percent: 0 });
+      } else if (event.type === "item" || event.type === "progress") {
+        setImageDeleteProgress({ phase: "deleting", current: event.current ?? 0, total: event.total ?? imageIds.length, completed: event.completed ?? 0, percent: event.percent ?? 0, imageId: event.imageId });
+      } else if (event.type === "done") {
+        deletedIds = event.deleted ?? imageIds;
+        setImageDeleteProgress({ phase: "completed", current: event.total ?? imageIds.length, total: event.total ?? imageIds.length, completed: event.completed ?? deletedIds.length, percent: 100 });
+      } else if (event.type === "error") {
+        const used = (event.used ?? []).map((item) => item.container).filter(Boolean).join(", ");
+        failure = used ? `${event.error ?? "No fue posible borrar las imágenes"}: ${used}` : event.error ?? "No fue posible borrar las imágenes";
+        deletedIds = event.deleted ?? [];
+        setImageDeleteProgress({ phase: "failed", current: event.current ?? event.completed ?? 0, total: event.total ?? imageIds.length, completed: event.completed ?? deletedIds.length, percent: event.percent ?? 0, imageId: event.imageId, error: failure });
+      }
+    };
     try {
-      const response = await fetch("/api/resources", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ imageIds: [...selectedImages] }) });
-      const payload = await response.json();
+      const response = await fetch("/api/resources", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ imageIds }) });
       if (!response.ok) {
+        const payload = await response.json();
         const used = (payload.used ?? []).map((item: { container?: string }) => item.container).filter(Boolean).join(", ");
         throw new Error(used ? `${payload.error}: ${used}` : (payload.error ?? "No fue posible borrar las imágenes"));
       }
-      setImageDeleteConfirm(false);
+      if (!response.body) throw new Error("No se recibió el progreso del borrado");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) if (line.trim()) handleEvent(JSON.parse(line));
+        if (done) break;
+      }
+      if (buffer.trim()) handleEvent(JSON.parse(buffer));
+      if (failure) throw new Error(failure);
       setSelectedImages(new Set());
       const refresh = await fetch("/api/resources?type=images", { cache: "no-store" });
       const refreshed = await refresh.json();
       setImages(refreshed.data ?? []);
-      setToast({ kind: "success", message: `${payload.deleted?.length ?? 0} imagen(es) eliminada(s).` });
+      setToast({ kind: "success", message: `${deletedIds.length} imagen(es) eliminada(s).` });
     } catch (error) {
-      setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible borrar las imágenes" });
+      const message = error instanceof Error ? error.message : "No fue posible borrar las imágenes";
+      setImageDeleteProgress((current) => current?.phase === "failed" ? current : { phase: "failed", current: current?.current ?? 0, total: current?.total ?? imageIds.length, completed: current?.completed ?? 0, percent: current?.percent ?? 0, error: message });
+      if (deletedIds.length) {
+        const deleted = new Set(deletedIds);
+        setSelectedImages((current) => new Set([...current].filter((id) => !deleted.has(id))));
+        void fetch("/api/resources?type=images", { cache: "no-store" }).then((response) => response.json()).then((payload) => setImages(payload.data ?? [])).catch(() => undefined);
+      }
+      setToast({ kind: "error", message: deletedIds.length ? `${deletedIds.length} imagen(es) eliminada(s) antes del error. ${message}` : message });
     } finally {
       setImageDeleting(false);
     }
@@ -1017,6 +1075,21 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       return (!normalized || searchable.includes(normalized)) && usageMatches;
     }).sort((left, right) => left.Name.localeCompare(right.Name, language, { numeric: true, sensitivity: "base" }));
   }, [volumes, volumeQuery, volumeUsageFilter, language]);
+  const containerPageCount = Math.max(1, Math.ceil(filtered.length / INVENTORY_PAGE_SIZE));
+  const safeContainerPage = Math.min(containerPage, containerPageCount);
+  const pageContainers = tableRows.slice((safeContainerPage - 1) * INVENTORY_PAGE_SIZE, safeContainerPage * INVENTORY_PAGE_SIZE);
+  const imagePageCount = Math.max(1, Math.ceil(filteredImages.length / INVENTORY_PAGE_SIZE));
+  const safeImagePage = Math.min(imagePage, imagePageCount);
+  const pageImages = filteredImages.slice((safeImagePage - 1) * INVENTORY_PAGE_SIZE, safeImagePage * INVENTORY_PAGE_SIZE);
+  const volumePageCount = Math.max(1, Math.ceil(filteredVolumes.length / INVENTORY_PAGE_SIZE));
+  const safeVolumePage = Math.min(volumePage, volumePageCount);
+  const pageVolumes = filteredVolumes.slice((safeVolumePage - 1) * INVENTORY_PAGE_SIZE, safeVolumePage * INVENTORY_PAGE_SIZE);
+  useEffect(() => { if (containerPage !== safeContainerPage) setContainerPage(safeContainerPage); }, [containerPage, safeContainerPage]);
+  useEffect(() => { if (imagePage !== safeImagePage) setImagePage(safeImagePage); }, [imagePage, safeImagePage]);
+  useEffect(() => { if (volumePage !== safeVolumePage) setVolumePage(safeVolumePage); }, [volumePage, safeVolumePage]);
+  useEffect(() => { setContainerPage(1); }, [query, environment, statusFilter]);
+  useEffect(() => { setImagePage(1); }, [imageQuery, imageFilter]);
+  useEffect(() => { setVolumePage(1); }, [volumeQuery, volumeUsageFilter]);
   const filteredNetworks = useMemo(() => {
     const normalized = networkQuery.trim().toLowerCase();
     return networks.filter((network) => `${network.Name} ${network.Driver ?? ""} ${network.Scope ?? ""} ${network.Labels?.["com.docker.compose.project"] ?? ""} ${(network.Containers ? Object.values(network.Containers).map((container) => container.Name ?? "").join(" ") : "")}`.toLowerCase().includes(normalized)).sort((left, right) => left.Name.localeCompare(right.Name, language, { numeric: true, sensitivity: "base" }));
@@ -1065,7 +1138,20 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       {createVolumeOpen ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal volume-modal" role="dialog" aria-modal="true" aria-labelledby="volume-create-title"><span className="modal-kicker"><Icon name="database" size={14} />Docker · {t("volumes")}</span><h2 id="volume-create-title"><Icon name="plus" size={19} />{language === "es" ? "Crear volumen" : "Create volume"}</h2><p>{language === "es" ? "Se creará un volumen local sin asociarlo todavía a ningún contenedor." : "A local volume will be created without attaching it to a container."}</p><label className="modal-field"><span>{language === "es" ? "Nombre del volumen" : "Volume name"}</span><input value={createVolumeName} onChange={(event) => setCreateVolumeName(event.target.value)} maxLength={128} placeholder="mi-volumen" autoFocus /></label><div className="modal-actions"><button type="button" onClick={() => setCreateVolumeOpen(false)} disabled={volumeCreating}>{t("cancel")}</button><button className="primary-button" type="button" onClick={createVolume} disabled={volumeCreating || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(createVolumeName.trim())}><Icon name={volumeCreating ? "loader" : "plus"} size={15} />{volumeCreating ? (language === "es" ? "Creando…" : "Creating…") : (language === "es" ? "Crear volumen" : "Create volume")}</button></div></section></div> : null}
       {volumeDetails ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal volume-modal" role="dialog" aria-modal="true" aria-labelledby="volume-details-title"><span className="modal-kicker"><Icon name="database" size={14} />Docker · {t("volumes")}</span><h2 id="volume-details-title">{volumeDetails.Name}</h2><dl className="volume-details"><div><dt>Driver</dt><dd>{volumeDetails.Driver ?? "local"}</dd></div><div><dt>{language === "es" ? "Ruta" : "Mountpoint"}</dt><dd>{volumeDetails.Mountpoint ?? "—"}</dd></div><div><dt>{language === "es" ? "Contenedores asociados" : "Attached containers"}</dt><dd>{volumeDetails.usedBy?.length ? volumeDetails.usedBy.join(", ") : "—"}</dd></div><div><dt>{language === "es" ? "Etiquetas Docker" : "Docker labels"}</dt><dd>{Object.keys(volumeDetails.Labels ?? {}).length ? Object.entries(volumeDetails.Labels ?? {}).map(([key, value]) => <span key={key}>{key}: {value}<br /></span>) : "—"}</dd></div></dl><div className="modal-actions"><button type="button" onClick={() => setVolumeDetails(null)}>{t("close")}</button></div></section></div> : null}
       {deleteVolume ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal volume-modal" role="alertdialog" aria-modal="true" aria-labelledby="volume-delete-title"><span className="modal-kicker"><Icon name="alert" size={14} />Docker · {t("volumes")}</span><h2 id="volume-delete-title">{language === "es" ? "Eliminar volumen" : "Delete volume"}</h2><p>{language === "es" ? "Esta acción borra permanentemente los datos almacenados en" : "This permanently removes all data stored in"} <strong>{deleteVolume.Name}</strong>. {language === "es" ? "No es posible deshacerla." : "It cannot be undone."}</p><label className="modal-field"><span>{language === "es" ? "Escribe el nombre exacto para confirmar" : "Type the exact name to confirm"}</span><input value={volumeConfirmName} onChange={(event) => setVolumeConfirmName(event.target.value)} autoComplete="off" spellCheck={false} /></label><div className="modal-actions"><button type="button" onClick={() => setDeleteVolume(null)} disabled={volumeDeleting}>{t("cancel")}</button><button className="danger-button" type="button" onClick={deleteSelectedVolume} disabled={volumeDeleting || volumeConfirmName !== deleteVolume.Name || Boolean(deleteVolume.usedBy?.length)}><Icon name={volumeDeleting ? "loader" : "alert"} size={15} />{volumeDeleting ? (language === "es" ? "Eliminando…" : "Deleting…") : t("delete")}</button></div></section></div> : null}
-      {imageDeleteConfirm ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="image-delete-title"><span className="modal-kicker">Imágenes de Docker</span><h2 id="image-delete-title">Borrar imágenes seleccionadas</h2><p>¿Confirmas borrar <strong>{selectedImages.size} imagen(es)</strong>? El servidor verificará todos los contenedores, incluso los inactivos. Si alguna imagen está en uso, no se borrará ninguna.</p><div className="modal-actions"><button type="button" onClick={() => setImageDeleteConfirm(false)} disabled={imageDeleting}>{t("cancel")}</button><button className="danger-button" type="button" onClick={deleteSelectedImages} disabled={imageDeleting}>{imageDeleting ? <><Icon name="loader" size={15} />Borrando…</> : <><Icon name="alert" size={15} />Confirmar borrado</>}</button></div></section></div> : null}
+      {imageDeleteConfirm ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal image-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="image-delete-title">
+        <span className="modal-kicker"><Icon name="image" size={14} />Docker · {language === "es" ? "Imágenes" : "Images"}</span>
+        <h2 id="image-delete-title">{imageDeleteProgress?.phase === "completed" ? (language === "es" ? "Borrado completado" : "Deletion complete") : imageDeleteProgress?.phase === "failed" ? (language === "es" ? "Borrado detenido" : "Deletion stopped") : language === "es" ? "Borrar imágenes seleccionadas" : "Delete selected images"}</h2>
+        {!imageDeleteProgress ? <p>{language === "es" ? <>¿Confirmas borrar <strong>{selectedImages.size} imagen(es)</strong>? El servidor verificará todos los contenedores, incluso los inactivos. Si alguna imagen está en uso, no se borrará ninguna.</> : <>Delete <strong>{selectedImages.size} selected image(s)</strong>? Vessel checks all containers, including stopped ones, before deleting any image.</>}</p> : null}
+        {imageDeleteProgress ? <div className={`image-delete-progress is-${imageDeleteProgress.phase}`} aria-live="polite">
+          <div className="image-delete-progress-label">{imageDeleteProgress.phase === "checking" ? <span><Icon name="loader" size={15} />{language === "es" ? "Comprobando contenedores e imágenes…" : "Checking containers and images…"}</span> : imageDeleteProgress.phase === "deleting" ? <span><Icon name="loader" size={15} />{language === "es" ? `Borrando ${imageDeleteProgress.current} de ${imageDeleteProgress.total}` : `Deleting ${imageDeleteProgress.current} of ${imageDeleteProgress.total}`}</span> : imageDeleteProgress.phase === "completed" ? <span><Icon name="check" size={15} />{language === "es" ? `${imageDeleteProgress.completed} de ${imageDeleteProgress.total} imágenes borradas` : `${imageDeleteProgress.completed} of ${imageDeleteProgress.total} images deleted`}</span> : <span><Icon name="alert" size={15} />{language === "es" ? `${imageDeleteProgress.completed} de ${imageDeleteProgress.total} imágenes borradas` : `${imageDeleteProgress.completed} of ${imageDeleteProgress.total} images deleted`}</span>}</div>
+          <div className="image-delete-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={imageDeleteProgress.percent}><span style={{ width: `${imageDeleteProgress.percent}%` }} /></div>
+          <div className="image-delete-progress-meta"><span>{imageDeleteProgress.phase === "checking" ? (language === "es" ? "No se borrará ninguna si alguna está en uso." : "Nothing is removed if an image is in use.") : imageDeleteProgress.phase === "deleting" ? imageDeleteProgress.imageId ? `${language === "es" ? "Imagen actual" : "Current image"}: ${imageDeleteProgress.imageId.slice(0, 24)}…` : (language === "es" ? "Preparando borrado…" : "Preparing deletion…") : imageDeleteProgress.phase === "completed" ? (language === "es" ? "Todas las imágenes seleccionadas fueron procesadas." : "All selected images were processed.") : imageDeleteProgress.error}</span><strong>{imageDeleteProgress.percent}%</strong></div>
+        </div> : null}
+        <div className="modal-actions">
+          {!imageDeleting ? <button type="button" onClick={() => { setImageDeleteConfirm(false); setImageDeleteProgress(null); }}>{imageDeleteProgress ? (language === "es" ? "Cerrar" : "Close") : t("cancel")}</button> : null}
+          {!imageDeleteProgress || imageDeleting ? <button className="danger-button" type="button" onClick={deleteSelectedImages} disabled={imageDeleting || !selectedImages.size}>{imageDeleting ? <><Icon name="loader" size={15} />{imageDeleteProgress?.phase === "checking" ? (language === "es" ? "Comprobando…" : "Checking…") : (language === "es" ? "Borrando…" : "Deleting…")}</> : <><Icon name="alert" size={15} />{language === "es" ? "Confirmar borrado" : "Confirm deletion"}</>}</button> : null}
+        </div>
+      </section></div> : null}
 
       {newServiceOpen ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal edit-modal new-service-modal" role="dialog" aria-modal="true" aria-labelledby="new-service-title">
         <span className="modal-kicker">Vessel · {newServiceContext ? (language === "es" ? newServiceContext.kind === "database" ? "Proyecto · Base de datos" : "Proyecto · Aplicación" : `Project · ${newServiceContext.kind === "database" ? "Database" : "Application"}`) : (language === "es" ? "Nuevo servicio" : "New service")}</span><h2 id="new-service-title"><Icon name="plus" size={19} />{language === "es" ? newServiceContext?.kind === "database" ? "Crear servicio de datos" : newServiceContext ? "Crear aplicación" : "Crear servicio" : newServiceContext?.kind === "database" ? "Create database service" : newServiceContext ? "Create application" : "Create service"}</h2>
@@ -1112,7 +1198,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             {visibleContainerColumns.has("database") ? tableSortHeader("database", t("database")) : null}
             {visibleContainerColumns.has("managedBy") ? tableSortHeader("managedBy", t("managed_by")) : null}
             <th>{language === "es" ? "Acciones" : "Actions"}</th>
-          </tr></thead><tbody>{tableRows.map((service) => <Fragment key={service.id}>
+          </tr></thead><tbody>{pageContainers.map((service) => <Fragment key={service.id}>
             <tr className={selectedServices.has(service.id) ? "container-row-selected" : ""}>
               <td className="container-select-cell"><input type="checkbox" checked={selectedServices.has(service.id)} onChange={() => toggleServiceSelection(service.id)} disabled={bulkAction !== null} aria-label={`${language === "es" ? "Seleccionar" : "Select"} ${service.name}`} /></td>
               <td><button type="button" className="container-name-link" onClick={() => openEdit(service)}>{service.name}</button><small>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]}{service.detailsUnavailable ? ` · ${language === "es" ? "detalles no disponibles" : "details unavailable"}` : ""}</small></td>
@@ -1128,8 +1214,9 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             </tr>
             {openTableMenu === service.id ? <tr className="container-table-expanded-row"><td colSpan={visibleContainerColumns.size + 4}><div className="container-table-expanded-actions"><button type="button" onClick={() => { openEdit(service); setOpenTableMenu(null); }}><Icon name="pencil" size={15} />{t("edit")}</button><button type="button" onClick={() => { requestServiceAction(service, "restart"); setOpenTableMenu(null); }}><Icon name="refresh" size={15} />{t("restart")}</button><button type="button" onClick={() => { requestServiceAction(service, service.status === "paused" ? "unpause" : "pause"); setOpenTableMenu(null); }} disabled={service.status !== "running" && service.status !== "paused"}><Icon name={service.status === "paused" ? "play" : "pause"} size={15} />{service.status === "paused" ? t("resume") : t("pause")}</button><button type="button" onClick={() => { requestServiceAction(service, "kill"); setOpenTableMenu(null); }} disabled={service.status !== "running" && service.status !== "unhealthy"}><Icon name="kill" size={15} />{t("kill")}</button><button type="button" onClick={() => { requestServiceAction(service, "recreate"); setOpenTableMenu(null); }}><Icon name="box" size={15} />{t("recreate")}</button><button type="button" onClick={() => { openDuplicate(service); setOpenTableMenu(null); }}><Icon name="layers" size={15} />{t("duplicate")}</button><button type="button" onClick={() => { openLabelManager(service); setOpenTableMenu(null); }}><Icon name="tag" size={15} />{t("labels")}</button><button type="button" className="table-delete" onClick={() => { setDeleteService(service); setOpenTableMenu(null); }}><Icon name="alert" size={15} />{t("delete")}</button></div></td></tr> : null}
           </Fragment>)}</tbody></table>{!filtered.length ? <div className="container-table-empty">{language === "es" ? "No hay contenedores para este filtro." : "No containers match this filter."}</div> : null}</div>
+          {filtered.length ? <InventoryPagination page={safeContainerPage} total={filtered.length} onPageChange={setContainerPage} language={language} /> : null}
         </> : <section className="grid" aria-label={t("containers")}>
-        {filtered.map((service) => <article className="service-card" key={service.id}>
+        {pageContainers.map((service) => <article className="service-card" key={service.id}>
           <div className="service-card-head"><div className="service-title"><span className="service-icon"><Icon name={categoryIcon[service.category]} size={18} /></span><div><h3>{service.name}</h3><span className="muted" title={service.image ?? undefined}>{({ application: t("applications"), database: t("databases"), external: t("external_tools") } as Record<ServiceCategory, string>)[service.category]} · {environmentLabel(service.environment, t)}{service.detailsUnavailable ? ` · ${language === "es" ? "detalles no disponibles" : "details unavailable"}` : null}{service.composeProject ? <button type="button" className="compose-badge compose-badge-button" onClick={() => openComposeProject(service)}>▣ Compose · {service.composeProject}</button> : null}</span></div></div><div className="service-head-actions"><div className="status-block"><span className={`status status-${service.status}`}><span className="status-dot" />{statusLabel(service.status, t)}</span><span className="status-since">{service.status === "unhealthy" ? t("unhealthy") : localizedStatusSince(service.statusSince, language)}</span></div><button className="edit-button" type="button" onClick={() => openEdit(service)} disabled={isServicePending(service.id)} title={t("edit")} aria-label={`${t("edit")} ${service.name}`}><Icon name="pencil" size={15} /></button></div></div>
           <div className="image-line"><span className="image-label"><Icon name="image" size={14} />{t("image")}</span><span className="image-name" title={service.image ?? undefined}>{service.image ?? "—"}</span><button className="copy-button" type="button" onClick={() => copyImage(service.image)} disabled={!service.image} title={t("copy_image")} aria-label={t("copy_image")}><Icon name="copy" size={15} /></button></div>
           {(labelsByContainer[service.id] ?? []).length ? <div className="service-tags"><Icon name="tag" size={13} />{(labelsByContainer[service.id] ?? []).map((label) => <span className="service-tag" key={label}>{label}</span>)}</div> : null}
@@ -1145,6 +1232,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             <button type="button" onClick={() => openLabelManager(service)} disabled={isServicePending(service.id)}><Icon name="tag" size={14} />{t("labels")}</button><button type="button" onClick={() => openDuplicate(service)} disabled={isServicePending(service.id)}><Icon name="layers" size={14} />{t("duplicate")}</button><button type="button" onClick={() => setDeleteService(service)} disabled={isServicePending(service.id)} className="delete-resource-button"><Icon name="alert" size={14} />{t("delete")}</button><button type="button" onClick={() => openLogs(service)} disabled={logsLoading !== null}><Icon name="terminal" size={14} />{logsLoading === service.id ? "Logs…" : t("logs")}</button>
           </div>
         </article>)}
+        {filtered.length ? <InventoryPagination page={safeContainerPage} total={filtered.length} onPageChange={setContainerPage} language={language} /> : null}
       </section>}</> : <section key={view} className="resource-panel" aria-live="polite">
         {resourceLoading ? <ResourceListLoadingSkeleton variant={view === "networks" || view === "volumes" ? view : "images"} label={language === "es" ? `Cargando ${view === "images" ? "imágenes" : view === "volumes" ? "volúmenes" : "redes"}` : `Loading ${view}`} /> : view === "images" ? <>
           <div className="resource-toolbar">
@@ -1153,7 +1241,8 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             <div className="image-total"><span>{t("total_images")}</span><strong>{images.length}</strong><small>{formatBytes(totalImageBytes)}</small></div>
           </div>
           <div className={`resource-actions${selectedImages.size ? " has-selection" : ""}`}><button type="button" onClick={() => setSelectedImages(allFilteredImagesSelected ? new Set() : new Set(filteredImages.map((image) => image.Id)))} disabled={!filteredImages.length}><span className="fake-checkbox" aria-hidden="true">{allFilteredImagesSelected ? "✓" : ""}</span>{allFilteredImagesSelected ? t("remove_selection") : `${t("select_results")} (${filteredImages.length})`}</button><span>{selectedImages.size} {t("selected")}</span><button className="delete-resource-button" type="button" onClick={() => setImageDeleteConfirm(true)} disabled={!selectedImages.size || imageDeleting} data-tooltip={language === "es" ? "Eliminar las imágenes seleccionadas." : "Delete the selected images."}><Icon name="trash" size={14} />{t("delete_selected")}</button></div>
-          <div className="resource-list">{filteredImages.length ? filteredImages.map((image) => <article className={`resource-row${selectedImages.has(image.Id) ? " selected" : ""}`} key={image.Id}><label className="image-checkbox"><input type="checkbox" checked={selectedImages.has(image.Id)} onChange={() => toggleImage(image.Id)} aria-label={`${language === "es" ? "Seleccionar" : "Select"} ${image.RepoTags?.[0] ?? image.Id}`} /><span className="fake-checkbox">{selectedImages.has(image.Id) ? "✓" : ""}</span></label><span className="resource-row-icon"><Icon name="image" size={18} /></span><div><strong title={image.RepoTags?.join(", ") ?? undefined}>{image.RepoTags?.join(", ") ?? (language === "es" ? "Imagen sin etiqueta" : "Untagged image")}</strong><span title={image.RepoDigests?.join(", ") ?? image.Id}>{image.RepoDigests?.[0] ?? image.Id.slice(0, 19)}</span><small className={image.used ? "image-in-use" : "image-unused"}>{image.used ? t("in_use") : t("unused_resource")} · {t("created")}: {formatDateTime(image.Created, language)}</small></div><span className="resource-size">{formatBytes(image.Size)}</span><button className="copy-button" type="button" disabled={!image.RepoTags?.[0]} onClick={() => copyImage(image.RepoTags?.[0] ?? null)} title={t("copy_image")}><Icon name="copy" size={15} /></button></article>) : <div className="empty-state">{t("no_images")}</div>}</div>
+          <div className="resource-list">{filteredImages.length ? pageImages.map((image) => <article className={`resource-row${selectedImages.has(image.Id) ? " selected" : ""}`} key={image.Id}><label className="image-checkbox"><input type="checkbox" checked={selectedImages.has(image.Id)} onChange={() => toggleImage(image.Id)} aria-label={`${language === "es" ? "Seleccionar" : "Select"} ${image.RepoTags?.[0] ?? image.Id}`} /><span className="fake-checkbox">{selectedImages.has(image.Id) ? "✓" : ""}</span></label><span className="resource-row-icon"><Icon name="image" size={18} /></span><div><strong title={image.RepoTags?.join(", ") ?? undefined}>{image.RepoTags?.join(", ") ?? (language === "es" ? "Imagen sin etiqueta" : "Untagged image")}</strong><span title={image.RepoDigests?.join(", ") ?? image.Id}>{image.RepoDigests?.[0] ?? image.Id.slice(0, 19)}</span><small className={image.used ? "image-in-use" : "image-unused"}>{image.used ? t("in_use") : t("unused_resource")} · {t("created")}: {formatDateTime(image.Created, language)}</small></div><span className="resource-size">{formatBytes(image.Size)}</span><button className="copy-button" type="button" disabled={!image.RepoTags?.[0]} onClick={() => copyImage(image.RepoTags?.[0] ?? null)} title={t("copy_image")}><Icon name="copy" size={15} /></button></article>) : <div className="empty-state">{t("no_images")}</div>}</div>
+          {filteredImages.length ? <InventoryPagination page={safeImagePage} total={filteredImages.length} onPageChange={setImagePage} language={language} /> : null}
         </> : view === "networks" ? <>
           <div className="resource-toolbar network-toolbar">
             <label className="resource-search"><span>{t("search")}</span><input value={networkQuery} onChange={(event) => setNetworkQuery(event.target.value)} placeholder={t("search_networks")} /></label>
@@ -1168,7 +1257,8 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
             <CustomSelect label={t("filter_usage")} value={volumeUsageFilter} onChange={setVolumeUsageFilter} options={[{ value: "all", label: t("all") }, { value: "used", label: t("in_use") }, { value: "unused", label: t("unused_resource") }]} />
             <span className="result-count">{filteredVolumes.length} {language === "es" ? "resultados" : "results"}</span>
           </div>
-          <div className="resource-table-wrap"><table className="resource-data-table volume-data-table"><thead><tr><th>{language === "es" ? "Nombre" : "Name"}</th><th>{t("compose_project")}</th><th>{language === "es" ? "Driver" : "Driver"}</th><th>{language === "es" ? "Punto de montaje" : "Mount point"}</th><th>{t("created")}</th><th>{t("attached_containers")}</th><th>{language === "es" ? "Acciones" : "Actions"}</th></tr></thead><tbody>{filteredVolumes.map((volume) => <tr key={volume.Name}><td className="resource-name-cell" title={volume.Name}>{volume.Name}</td><td className="resource-subtle">{volume.Labels?.["com.docker.compose.project"] ?? "—"}</td><td>{volume.Driver ?? "local"}</td><td className="resource-multiline" title={volume.Mountpoint ?? undefined}>{volume.Mountpoint ?? "—"}</td><td>{volume.CreatedAt ? formatDateTime(volume.CreatedAt, language) : "—"}</td><td className="resource-multiline">{volume.usedBy?.length ? volume.usedBy.join(", ") : <span className="volume-unused">{language === "es" ? "Sin uso" : "Unused"}</span>}</td><td><div className="volume-row-actions"><button type="button" onClick={() => setVolumeDetails(volume)}><Icon name="layers" size={14} />{language === "es" ? "Detalles" : "Details"}</button><button type="button" className="volume-remove" onClick={() => { setDeleteVolume(volume); setVolumeConfirmName(""); }} disabled={Boolean(volume.usedBy?.length)} title={volume.usedBy?.length ? (language === "es" ? "Desconecta o elimina los contenedores asociados primero" : "Disconnect or remove attached containers first") : undefined}><Icon name="alert" size={14} />{t("delete")}</button></div></td></tr>)}</tbody></table>{!filteredVolumes.length ? <div className="resource-empty">{volumes.length ? (language === "es" ? "No hay volúmenes que coincidan con el filtro." : "No volumes match this filter.") : (language === "es" ? "No hay volúmenes disponibles." : "No volumes available.")}</div> : null}</div>
+          <div className="resource-table-wrap"><table className="resource-data-table volume-data-table"><thead><tr><th>{language === "es" ? "Nombre" : "Name"}</th><th>{t("compose_project")}</th><th>{language === "es" ? "Driver" : "Driver"}</th><th>{language === "es" ? "Punto de montaje" : "Mount point"}</th><th>{t("created")}</th><th>{t("attached_containers")}</th><th>{language === "es" ? "Acciones" : "Actions"}</th></tr></thead><tbody>{pageVolumes.map((volume) => <tr key={volume.Name}><td className="resource-name-cell" title={volume.Name}>{volume.Name}</td><td className="resource-subtle">{volume.Labels?.["com.docker.compose.project"] ?? "—"}</td><td>{volume.Driver ?? "local"}</td><td className="resource-multiline" title={volume.Mountpoint ?? undefined}>{volume.Mountpoint ?? "—"}</td><td>{volume.CreatedAt ? formatDateTime(volume.CreatedAt, language) : "—"}</td><td className="resource-multiline">{volume.usedBy?.length ? volume.usedBy.join(", ") : <span className="volume-unused">{language === "es" ? "Sin uso" : "Unused"}</span>}</td><td><div className="volume-row-actions"><button type="button" onClick={() => setVolumeDetails(volume)}><Icon name="layers" size={14} />{language === "es" ? "Detalles" : "Details"}</button><button type="button" className="volume-remove" onClick={() => { setDeleteVolume(volume); setVolumeConfirmName(""); }} disabled={Boolean(volume.usedBy?.length)} title={volume.usedBy?.length ? (language === "es" ? "Desconecta o elimina los contenedores asociados primero" : "Disconnect or remove attached containers first") : undefined}><Icon name="alert" size={14} />{t("delete")}</button></div></td></tr>)}</tbody></table>{!filteredVolumes.length ? <div className="resource-empty">{volumes.length ? (language === "es" ? "No hay volúmenes que coincidan con el filtro." : "No volumes match this filter.") : (language === "es" ? "No hay volúmenes disponibles." : "No volumes available.")}</div> : null}</div>
+          {filteredVolumes.length ? <InventoryPagination page={safeVolumePage} total={filteredVolumes.length} onPageChange={setVolumePage} language={language} /> : null}
         </>}
       </section>}
 

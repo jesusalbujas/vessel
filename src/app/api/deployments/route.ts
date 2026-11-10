@@ -1,5 +1,6 @@
 import { deleteDeployments, getDeployments, postDeployments } from "@/server/api/deployments";
 import { NextResponse } from "next/server";
+import { withAudit } from "@/lib/audit-log";
 
 export const GET = getDeployments;
 export async function POST(request: Request) {
@@ -7,6 +8,6 @@ export async function POST(request: Request) {
   if (engineId && engineId !== "local") {
     return NextResponse.json({ error: "Los despliegues Git todavía se ejecutan únicamente en el Engine local. Cambia a Local antes de iniciar uno." }, { status: 409 });
   }
-  return postDeployments(request);
+  return withAudit(request, postDeployments, "deployments");
 }
-export const DELETE = deleteDeployments;
+export const DELETE = (request: Request) => withAudit(request, deleteDeployments, "deployments");

@@ -2,7 +2,10 @@ services:
   service-portal:
     build:
       context: .
+      dockerfile: docker/Dockerfile
       target: development
+      args:
+        VESSEL_VERSION: ${VESSEL_VERSION:-}
     container_name: vessel-dev
     restart: unless-stopped
     command: npm run dev -- --hostname 0.0.0.0

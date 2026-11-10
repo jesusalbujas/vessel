@@ -4,7 +4,7 @@ import VesselSelect from "@/app/components/VesselSelect";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Boxes, CalendarClock, ChevronRight, CircleHelp, Container, Database, ExternalLink, Globe, Layers3, Plus, RefreshCw, Search, Sparkles, Tag, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Boxes, CalendarClock, ChevronRight, CircleHelp, Container, Database, ExternalLink, Globe, Layers3, Plus, RefreshCw, Search, Bot, Tag, Trash2, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { formatLocalDateTime } from "@/lib/date-format";
 import { PageLoadingSkeleton } from "@/app/components/LoadingSkeletons";
@@ -33,7 +33,7 @@ const serviceTypes = [
   { id: "database", Icon: Database, en: "Database", es: "Base de datos", helpEn: "Create a database service from any Docker image.", helpEs: "Crea un servicio de datos con cualquier imagen Docker." },
   { id: "compose", Icon: Boxes, en: "Compose", es: "Compose", helpEn: "Define and deploy multiple services together.", helpEs: "Define y despliega varios servicios relacionados." },
   { id: "template", Icon: Layers3, en: "Template", es: "Plantilla", helpEn: "Start from a Compose example.", helpEs: "Empieza con un ejemplo Compose." },
-  { id: "assistant", Icon: Sparkles, en: "AI Assistant", es: "Asistente IA", helpEn: "Not configured yet.", helpEs: "Aún no está configurado." },
+  { id: "assistant", Icon: Bot, en: "AI Assistant", es: "Asistente IA", helpEn: "Not configured yet.", helpEs: "Aún no está configurado." },
   { id: "import", Icon: ExternalLink, en: "Import", es: "Importar", helpEn: "Add an existing Docker or Git resource.", helpEs: "Añade un recurso Docker o Git existente." },
 ];
 

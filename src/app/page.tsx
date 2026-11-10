@@ -206,6 +206,7 @@ export default function OverviewPage() {
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyRange, setHistoryRange] = useState<HistoryRange>("1h");
   const [selectedEngineId, setSelectedEngineId] = useState("local");
+  const [engineAvailability, setEngineAvailability] = useState<Record<string, "online" | "offline">>({});
   const [engineSelectionReady, setEngineSelectionReady] = useState(false);
   const [localEngineName, setLocalEngineName] = useState("Engine Local");
 
@@ -432,11 +433,15 @@ export default function OverviewPage() {
         const overview = await response.json();
         if (cancelled) return;
         if (!response.ok || !overview?.data) {
+          setEngineAvailability((current) => ({ ...current, [selectedEngineId]: "offline" }));
+          window.dispatchEvent(new CustomEvent("vessel-engine-connectivity", { detail: { engineId: selectedEngineId, online: false } }));
           setSnapshot(null);
           setError(true);
           setEngineError(typeof overview?.error === "string" ? overview.error : null);
           return;
         }
+        setEngineAvailability((current) => ({ ...current, [selectedEngineId]: "online" }));
+        window.dispatchEvent(new CustomEvent("vessel-engine-connectivity", { detail: { engineId: selectedEngineId, online: true } }));
         setSnapshot(overview.data as Snapshot);
         if (!overview.data.engine?.ComposeVersion) {
           void fetch("/api/compose-version", { cache: "no-store", signal: controller.signal })
@@ -446,6 +451,14 @@ export default function OverviewPage() {
                 setSnapshot((current) => current ? { ...current, engine: current.engine ? { ...current.engine, ComposeVersion: versionData.version } : current.engine } : current);
               }
             }).catch(() => undefined);
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setEngineAvailability((current) => ({ ...current, [selectedEngineId]: "offline" }));
+          window.dispatchEvent(new CustomEvent("vessel-engine-connectivity", { detail: { engineId: selectedEngineId, online: false } }));
+          setSnapshot(null);
+          setError(true);
+          setEngineError(cause instanceof Error ? cause.message : null);
         }
       } finally { if (!cancelled) setLoading(false); }
     }
@@ -486,7 +499,7 @@ export default function OverviewPage() {
 
   return <main className="module-main overview-page">
     <div className="overview-heading"><div><span className="overview-eyebrow">VESSEL / {es ? "RESUMEN" : "OVERVIEW"}</span><h1>{es ? "Tu espacio de trabajo" : "Your workspace"}</h1><p>{es ? "Una vista clara del estado de Docker. Entra a un proyecto o recurso cuando necesites manejarlo." : "A clear view of Docker health. Open a project or resource when you need to manage it."}</p></div><button className="overview-refresh" type="button" disabled={loading} onClick={() => setRefreshIndex((value) => value + 1)}><RefreshCw size={16} className={loading ? "spinning" : ""} />{es ? "Actualizar" : "Refresh"}</button></div>
-    <div className="overview-engine-select"><Server size={17} /><strong>Engine</strong><VesselSelect aria-label={es ? "Engine Docker activo" : "Active Docker Engine"} value={selectedEngineId} onChange={(event) => selectEngine(event.target.value)}><option value="local">{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id}>{server.name} · {server.host}</option>)}</VesselSelect></div>
+    <div className="overview-engine-select"><Server size={17} /><strong>Engine</strong><VesselSelect aria-label={es ? "Engine Docker activo" : "Active Docker Engine"} value={selectedEngineId} onChange={(event) => selectEngine(event.target.value)}><option value="local" data-status={engineAvailability.local} data-status-label={es ? "Sin conexión" : "Unavailable"}>{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id} data-status={engineAvailability[server.id]} data-status-label={es ? "Sin conexión" : "Unavailable"}>{server.name} · {server.host}</option>)}</VesselSelect></div>
     {error ? <div className="overview-error" role="alert"><Server size={22} /><div><strong>{selectedRemoteServer ? (es ? `No se pudo conectar a ${selectedRemoteServer.name}` : `Could not connect to ${selectedRemoteServer.name}`) : es ? "Docker no está disponible" : "Docker is unavailable"}</strong><p>{engineError ?? (selectedRemoteServer ? (es ? `No se pudo leer el estado de Docker en ${selectedRemoteServer.host}. Verifica la conexión SSH y que el usuario tenga acceso al socket Docker.` : `Could not read Docker state from ${selectedRemoteServer.host}. Check SSH connectivity and the user's access to the Docker socket.`) : es ? "No se pudo leer el estado de los contenedores. Revisa la conexión del backend y vuelve a intentar." : "Could not read container state. Check the backend connection and try again.")}</p></div></div> : null}
     {initialLoading ? <OverviewLoadingSkeleton variant="status" label={es ? "Cargando estado de Docker" : "Loading Docker status"} /> : error ? null : <section className="overview-status" aria-label={es ? "Estado del entorno" : "Environment status"}>
       <div className="overview-status-head"><span className="overview-status-icon"><Server size={20} /></span><div><strong>Docker Engine{snapshot?.engine?.ServerVersion ? ` · ${snapshot.engine.ServerVersion}` : ""}</strong><span>{snapshot?.engine?.Name || snapshot?.host ? `Host · ${snapshot.engine?.Name || snapshot.host}` : selectedRemoteServer ? `Host · ${selectedRemoteServer.host}` : es ? "Host local" : "Local host"}</span></div><span className={`overview-health ${error ? "is-error" : ""}`}><i />{error ? (es ? "Sin conexión" : "Disconnected") : (es ? "Conectado" : "Connected")}</span></div>
