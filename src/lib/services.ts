@@ -35,6 +35,7 @@ export type Service = {
   image: string | null;
   imageVersion: string | null;
   networks: string[];
+  detailsLoaded?: boolean;
   environmentVariables?: string[];
   detailsUnavailable?: boolean;
   restartPolicy: { name: RestartPolicy; maxRetries: number };

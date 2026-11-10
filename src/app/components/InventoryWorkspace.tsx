@@ -486,7 +486,7 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   }
 
   async function refreshServices() {
-    const response = await fetch("/api/services", { cache: "no-store" });
+    const response = await fetch("/api/services?summary=1", { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? "El backend Docker no respondió al actualizar el estado");
     setCatalog(payload.data ?? []);
@@ -653,6 +653,32 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   }
 
   function openContainerEditor(service: Service) {
+    void (async () => {
+      const fullService = await loadServiceDetails(service);
+      if (!fullService) return;
+      openContainerEditorWithDetails(fullService);
+    })();
+  }
+
+  async function loadServiceDetails(service: Service): Promise<Service | null> {
+    if (service.detailsLoaded || service.detailsUnavailable) return service;
+    setPendingAction(`${service.id}:details`);
+    try {
+      const response = await fetch(`/api/services?details=${encodeURIComponent(service.id)}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok || !payload.data?.[0]) throw new Error(payload.error ?? "No se pudieron leer los detalles del contenedor");
+      const details = payload.data[0] as Service;
+      setCatalog((current) => current.map((item) => item.id === details.id ? details : item));
+      return details;
+    } catch (error) {
+      setToast({ kind: "error", message: error instanceof Error ? error.message : "No se pudieron leer los detalles del contenedor" });
+      return null;
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  function openContainerEditorWithDetails(service: Service) {
     if (service.detailsUnavailable) {
       setToast({ kind: "error", message: language === "es" ? `No se puede editar ${service.name}: Docker no devolvió todos sus detalles. Actualiza la lista e inténtalo de nuevo.` : `Cannot edit ${service.name}: Docker did not return all container details. Refresh the list and try again.` });
       return;
@@ -699,7 +725,10 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     }
   }
 
-  function openDuplicate(service: Service) {
+  async function openDuplicate(service: Service) {
+    const fullService = await loadServiceDetails(service);
+    if (!fullService) return;
+    service = fullService;
     if (service.detailsUnavailable) {
       setToast({ kind: "error", message: language === "es" ? `No se puede duplicar ${service.name}: Docker no devolvió todos sus detalles. Actualiza la lista e inténtalo de nuevo.` : `Cannot duplicate ${service.name}: Docker did not return all container details. Refresh the list and try again.` });
       return;

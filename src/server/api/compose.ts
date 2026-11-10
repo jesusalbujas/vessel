@@ -59,37 +59,10 @@ async function saveCompose(name: string, yaml: string) {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "compose.yaml"), yaml, "utf8");
 }
-type ComposeCliProject = { Name?: string; Status?: string; ConfigFiles?: string };
-async function listComposeProjects(): Promise<ComposeCliProject[]> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("docker", ["compose", "ls", "--all", "--format", "json"], { env: { ...process.env, ...dockerCliEnvironment() } });
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => child.kill("SIGTERM"), 10000);
-    child.stdout.on("data", (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-2_000_000); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-16000); });
-    child.on("error", (error) => { clearTimeout(timeout); reject(error); });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      if (code !== 0) return reject(new Error(stderr || "docker compose ls failed"));
-      try { resolve(JSON.parse(stdout || "[]") as ComposeCliProject[]); }
-      catch { reject(new Error("docker compose ls returned invalid JSON")); }
-    });
-  });
-}
 async function discoveredComposeFile(name: string): Promise<string | null> {
-  let configured: string | undefined;
-  try {
-    const project = (await listComposeProjects()).find((item) => item.Name === name);
-    configured = project?.ConfigFiles?.split(",")[0]?.trim();
-  } catch {
-    // Fall back to Docker labels if Compose CLI discovery is unavailable.
-  }
-  if (!configured) {
   const containers = await listDockerContainers();
   const container = containers.find((item) => item.Labels?.["com.docker.compose.project"] === name);
-  configured = container?.Labels?.["com.docker.compose.project.config_files"]?.split(",")[0]?.trim();
-  }
+  const configured = container?.Labels?.["com.docker.compose.project.config_files"]?.split(",")[0]?.trim();
   if (!configured) return null;
   // Some deployments mount the host Compose file at the identical absolute path.
   try { await access(configured); return configured; } catch { /* map through the configured host source mount below */ }
@@ -116,19 +89,10 @@ export async function getCompose(request: Request) {
           containers: [],
         };
         current.containers.push((container.Names?.[0] ?? container.Id.slice(0, 12)).replace(/^\//, ""));
+        const configFiles = labels["com.docker.compose.project.config_files"]?.split(",").map((file) => file.trim()).filter(Boolean) ?? [];
+        if (configFiles.length) current.configFiles = [...new Set([...(current.configFiles ?? []), ...configFiles])];
+        current.status = container.State ?? current.status;
         projects.set(project, current);
-      }
-      try {
-        for (const composeProject of await listComposeProjects()) {
-          const projectName = composeProject.Name?.trim();
-          if (!projectName) continue;
-          const current = projects.get(projectName) ?? { name: projectName, source: "docker-compose-cli", containers: [] };
-          current.configFiles = composeProject.ConfigFiles?.split(",").map((file) => file.trim()).filter(Boolean) ?? [];
-          current.status = composeProject.Status;
-          projects.set(projectName, current);
-        }
-      } catch {
-        // Docker labels still provide a useful inventory if CLI discovery fails.
       }
       return privateJson({ data: [...projects.values()].sort((a, b) => a.name.localeCompare(b.name)) });
     } catch {

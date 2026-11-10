@@ -218,26 +218,42 @@ export async function getServices(request: Request) {
   }
 
   try {
-    const containers = (await listDockerContainers()).filter((container) => !isPortalContainer(container));
+    const params = new URL(request.url).searchParams;
+    const detailId = params.get("details");
+    const summaryOnly = params.get("summary") === "1" || !detailId;
+    const [listedContainers, summaryNetworks] = await Promise.all([
+      listDockerContainers(),
+      summaryOnly ? listDockerNetworks().catch(() => []) : Promise.resolve([]),
+    ]);
+    const allContainers = listedContainers.filter((container) => !isPortalContainer(container));
     const host = serviceHost(request);
-    // The workspace overview only needs container list metadata (state, ports,
-    // image and Compose labels). Inspecting every container is expensive on
-    // SSH-backed Engines because each inspection is a separate Docker API hop.
-    const summaryOnly = new URL(request.url).searchParams.get("summary") === "1";
+    const detailTarget = detailId ? allContainers.find((container) => detailId === `container-${container.Id.slice(0, 12)}` || detailId === container.Id) : undefined;
+    if (detailId && !detailTarget) return NextResponse.json({ error: "El contenedor ya no existe; actualiza la lista" }, { status: 404, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
+    // Render the inventory from Docker's container summary. Full configuration
+    // is fetched only when someone opens Edit or Duplicate for a specific item.
+    const containers = detailTarget ? [detailTarget] : allContainers;
     const inspectionResults: PromiseSettledResult<Awaited<ReturnType<typeof inspectDockerContainer>>>[] = [];
-    if (!summaryOnly) {
-      for (let offset = 0; offset < containers.length; offset += 4) {
-        const batch = containers.slice(offset, offset + 4);
-        inspectionResults.push(...await Promise.allSettled(batch.map((container) => inspectDockerContainer(container.Id))));
-      }
+    if (!summaryOnly && detailTarget) {
+      inspectionResults.push(...await Promise.allSettled([inspectDockerContainer(detailTarget.Id)]));
     }
     const details = summaryOnly ? containers.map(() => null) : inspectionResults.map((result) => result.status === "fulfilled" ? result.value : null);
     const inspectionFailures = inspectionResults.filter((result) => result.status === "rejected").length;
+    const networkMembership = new Map<string, { names: string[]; ips: string[] }>();
+    for (const network of summaryNetworks) {
+      for (const [containerId, membership] of Object.entries(network.Containers ?? {})) {
+        const current = networkMembership.get(containerId) ?? { names: [], ips: [] };
+        current.names.push(network.Name);
+        if (membership.IPv4Address) current.ips.push(membership.IPv4Address.split("/")[0]);
+        if (membership.IPv6Address) current.ips.push(membership.IPv6Address.split("/")[0]);
+        networkMembership.set(containerId, current);
+      }
+    }
     const services = containers.map((container, index) => {
       const name = (container.Names?.[0] ?? container.Id.slice(0, 12)).replace(/^\//, "");
       const composeProject = container.Labels?.["com.docker.compose.project"] ?? null;
       const linkedProjectId = vesselProjectIdForResource("container", name) ?? (composeProject ? vesselProjectIdForResource("compose", composeProject) : null);
       const environmentVariables = details[index]?.Config?.Env;
+      const discoveredNetworks = networkMembership.get(container.Id);
       const port = publicPort(container);
       const status = statusFor(container);
       return {
@@ -257,20 +273,21 @@ export async function getServices(request: Request) {
         ready: readyFor(container),
         image: container.Image ?? null,
         imageVersion: imageVersion(container.Image ?? null),
-        networks: Object.keys(details[index]?.NetworkSettings?.Networks ?? {}),
+        networks: details[index] ? Object.keys(details[index].NetworkSettings?.Networks ?? {}) : discoveredNetworks?.names ?? [],
+        detailsLoaded: !summaryOnly && Boolean(details[index]),
         ...(user.role === "viewer" || !environmentVariables ? {} : { environmentVariables: linkedProjectId ? maskVesselProjectEnvironmentReferences(linkedProjectId, environmentVariables) : environmentVariables }),
-        ...(details[index] ? {} : { detailsUnavailable: true }),
+        ...(!summaryOnly && !details[index] ? { detailsUnavailable: true } : {}),
         restartPolicy: restartPolicyFor(details[index]),
         ...(user.role === "viewer" ? {} : { runtimeSettings: details[index] ? runtimeSettingsFor(details[index]) : undefined }),
         composeProject,
         composeService: container.Labels?.["com.docker.compose.service"] ?? null,
         createdAt: container.Created ?? null,
-        ipAddresses: [...new Set(Object.values(details[index]?.NetworkSettings?.Networks ?? {}).flatMap((network) => [network.IPAddress, network.GlobalIPv6Address]).filter((address): address is string => Boolean(address)))],
+        ipAddresses: details[index] ? [...new Set(Object.values(details[index].NetworkSettings?.Networks ?? {}).flatMap((network) => [network.IPAddress, network.GlobalIPv6Address]).filter((address): address is string => Boolean(address)))] : discoveredNetworks?.ips ?? [],
         publishedPorts: publishedPorts(container),
         managedBy: container.Labels?.["com.docker.compose.project"] ? "Compose" : "Docker Engine",
       };
     });
-    return NextResponse.json({ data: services, meta: { source: "vessel", dockerSync: inspectionFailures ? "partial" : "ok", discovered: containers.length, inspectionFailures, summaryOnly, host } }, { headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
+    return NextResponse.json({ data: services, meta: { source: "vessel", dockerSync: inspectionFailures ? "partial" : "ok", discovered: detailTarget ? 1 : allContainers.length, inspectionFailures, summaryOnly, host } }, { headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 300) : "Error desconocido";
     return NextResponse.json({ error: `No fue posible consultar los contenedores Docker: ${message}` }, { status: 502, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
