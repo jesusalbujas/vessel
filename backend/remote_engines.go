@@ -351,22 +351,8 @@ type remoteHostMetrics struct {
 		Type   string `json:"type"`
 	} `json:"disk"`
 	UptimeSeconds float64 `json:"uptimeSeconds"`
-	PackageUpdates struct {
-		Supported  bool `json:"supported"`
-		Available  int  `json:"available"`
-		Security   int  `json:"security"`
-	} `json:"packageUpdates"`
 	SampledAt time.Time `json:"sampledAt"`
 }
-
-type remotePackageUpdateSnapshot struct {
-	supported bool
-	available int
-	security  int
-	checkedAt time.Time
-}
-
-var remotePackageUpdateCache sync.Map
 
 func cpuTickTotals(line string) (uint64, uint64, error) {
 	fields := strings.Fields(line)
@@ -399,10 +385,6 @@ func readRemoteHostMetrics(ctx context.Context, engine remoteEngine) (remoteHost
 		target = engine.Username + "@[" + engine.Host + "]"
 	}
 	remoteCommand := "LC_ALL=C; printf '__VESSEL_CPU_FIRST__\\n'; head -n 1 /proc/stat; sleep 1; printf '__VESSEL_CPU_SECOND__\\n'; head -n 1 /proc/stat; printf '__VESSEL_MEMORY__\\n'; cat /proc/meminfo; printf '__VESSEL_DISK__\\n'; df -Pk /; printf '__VESSEL_DISK_TYPE__\\n'; ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || printf /var/lib/docker); DEV=$(findmnt -n -o SOURCE -T \"$ROOT\" 2>/dev/null); if [ -n \"$DEV\" ] && command -v lsblk >/dev/null 2>&1; then lsblk -s -n -o ROTA,TYPE \"$DEV\" | awk '$2 == \"disk\" { if ($1 == 1) h=1; else if ($1 == 0) s=1 } END { if (h && s) print \"mixed\"; else if (h) print \"mechanical\"; else if (s) print \"solid_state\"; else print \"unknown\" }'; else printf 'unknown\\n'; fi; printf '__VESSEL_UPTIME__\\n'; awk '{print $1}' /proc/uptime"
-	cachedUpdates, hasCachedUpdates := remotePackageUpdateCache.Load(engine.ID)
-	if !hasCachedUpdates || time.Since(cachedUpdates.(remotePackageUpdateSnapshot).checkedAt) >= 30*time.Minute {
-		remoteCommand += "; printf '__VESSEL_PACKAGE_UPDATES__\\n'; if command -v apt-get >/dev/null 2>&1; then apt-get -s upgrade 2>/dev/null | awk '/^Inst / {n++; if (tolower($0) ~ /security/) s++} END {printf \"apt %d %d\\n\", n, s}'; else printf 'unsupported 0 0\\n'; fi"
-	}
 	command := exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-p", strconv.Itoa(engine.Port), "-i", keyPath,
 		"-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UserKnownHostsFile="+knownHostsPath,
 		target, remoteCommand)
@@ -413,14 +395,6 @@ func readRemoteHostMetrics(ctx context.Context, engine remoteEngine) (remoteHost
 	metrics, err := parseRemoteHostMetrics(string(output))
 	if err != nil {
 		return remoteHostMetrics{}, err
-	}
-	if hasCachedUpdates && time.Since(cachedUpdates.(remotePackageUpdateSnapshot).checkedAt) < 30*time.Minute {
-		entry := cachedUpdates.(remotePackageUpdateSnapshot)
-		metrics.PackageUpdates.Supported = entry.supported
-		metrics.PackageUpdates.Available = entry.available
-		metrics.PackageUpdates.Security = entry.security
-	} else {
-		remotePackageUpdateCache.Store(engine.ID, remotePackageUpdateSnapshot{supported: metrics.PackageUpdates.Supported, available: metrics.PackageUpdates.Available, security: metrics.PackageUpdates.Security, checkedAt: time.Now()})
 	}
 	metrics.SampledAt = time.Now().UTC()
 	return metrics, nil
@@ -434,7 +408,6 @@ func parseRemoteHostMetrics(output string) (remoteHostMetrics, error) {
 		diskMarker      = "__VESSEL_DISK__"
 		diskTypeMarker  = "__VESSEL_DISK_TYPE__"
 		uptimeMarker    = "__VESSEL_UPTIME__"
-		updatesMarker   = "__VESSEL_PACKAGE_UPDATES__"
 	)
 	var metrics remoteHostMetrics
 	var firstCPU string
@@ -463,9 +436,6 @@ func parseRemoteHostMetrics(output string) (remoteHostMetrics, error) {
 			continue
 		case uptimeMarker:
 			section = "uptime"
-			continue
-		case updatesMarker:
-			section = "package-updates"
 			continue
 		}
 		switch section {
@@ -529,20 +499,6 @@ func parseRemoteHostMetrics(output string) (remoteHostMetrics, error) {
 		case "uptime":
 			if seconds, err := strconv.ParseFloat(strings.TrimSpace(line), 64); err == nil && seconds >= 0 {
 				metrics.UptimeSeconds = seconds
-				section = ""
-			}
-		case "package-updates":
-			fields := strings.Fields(line)
-			if len(fields) >= 3 {
-				if fields[0] == "apt" {
-					available, availableErr := strconv.Atoi(fields[1])
-					security, securityErr := strconv.Atoi(fields[2])
-					if availableErr == nil && securityErr == nil {
-						metrics.PackageUpdates.Supported = true
-						metrics.PackageUpdates.Available = max(0, available)
-						metrics.PackageUpdates.Security = max(0, security)
-					}
-				}
 				section = ""
 			}
 		}

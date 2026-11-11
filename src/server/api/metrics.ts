@@ -1,4 +1,4 @@
-import { readFile, statfs } from "node:fs/promises";
+import { readdir, readFile, statfs } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { authenticatedUser, userHasPermission } from "@/lib/control-plane";
 import { dockerApiBase, dockerGet } from "@/lib/docker/client";
@@ -80,6 +80,24 @@ function memoryKilobytes(text: string, key: string) {
   return Number(text.match(new RegExp(`^${key}:\\s+(\\d+)`, "m"))?.[1] ?? 0);
 }
 
+async function detectVisibleDiskType(): Promise<"mechanical" | "solid_state" | "mixed" | "unknown"> {
+  try {
+    const devices = await readdir("/sys/block");
+    const types = new Set<string>();
+    await Promise.all(devices.filter((name) => !/^(loop|ram|zram|dm-|md)/.test(name)).map(async (name) => {
+      try {
+        const rotational = (await readFile(`/sys/block/${name}/queue/rotational`, "utf8")).trim();
+        if (rotational === "1") types.add("mechanical");
+        else if (rotational === "0") types.add("solid_state");
+      } catch { /* Ignore devices without rotational metadata. */ }
+    }));
+    if (types.size > 1) return "mixed";
+    return types.values().next().value as "mechanical" | "solid_state" | undefined ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function getMetrics(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
@@ -120,11 +138,12 @@ export async function getMetrics(request: Request) {
     }
     const first = cpuTotals(await readFile("/proc/stat", "utf8"));
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const [stat, memoryText, disk, uptimeText, dockerDisk, io] = await Promise.all([
+    const [stat, memoryText, disk, uptimeText, diskType, dockerDisk, io] = await Promise.all([
       readFile("/proc/stat", "utf8"),
       readFile("/proc/meminfo", "utf8"),
       statfs(process.env.VESSEL_METRICS_PATH ?? "/app/data").catch(() => statfs(process.cwd())),
       readFile("/proc/uptime", "utf8").catch(() => ""),
+      detectVisibleDiskType(),
       hostOnly ? Promise.resolve({ value: null, error: null }) : optionalMetric(dockerStorageUsage),
       hostOnly ? Promise.resolve({ value: null, error: null }) : optionalMetric(dockerIoUsage),
     ]);
@@ -138,9 +157,8 @@ export async function getMetrics(request: Request) {
     return NextResponse.json({
       cpu: { percent: cpuPercent },
       memory: { used: Math.max(0, memoryTotal - memoryAvailable), total: memoryTotal },
-      disk: { used: diskUsed, total: diskTotal, source: "vessel-data-filesystem", type: "unknown" },
+      disk: { used: diskUsed, total: diskTotal, source: "vessel-data-filesystem", type: diskType },
       uptimeSeconds: Math.max(0, Number.parseFloat(uptimeText.split(/\s+/)[0] ?? "") || 0),
-      packageUpdates: { supported: false, available: 0, security: 0 },
       dockerDisk: dockerDisk.value,
       dockerDiskError: dockerDisk.error,
       io: io.value,
