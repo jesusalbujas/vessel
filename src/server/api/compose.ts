@@ -245,8 +245,8 @@ export async function postCompose(request: Request) {
   const user = mutationUser(request);
   if (!user) return privateJson({ error: "Authentication required" }, { status: 401 });
   if (!userHasPermission(user, "compose.manage")) return privateJson({ error: "Permission denied" }, { status: 403 });
-  const body = await request.json().catch(() => null) as { name?: string; yaml?: string; env?: string; envEdited?: boolean; action?: "preview" | "validate" | "save" | "save_env" | "up" | "up_service" | "down"; service?: string; projectId?: string; projectServiceKind?: "compose" | "template" } | null;
-  if (!body?.name || !body.yaml || !["preview", "validate", "save", "save_env", "up", "up_service", "down"].includes(body.action ?? "")) return privateJson({ error: "name, yaml and a valid action are required" }, { status: 400 });
+  const body = await request.json().catch(() => null) as { name?: string; yaml?: string; env?: string; envEdited?: boolean; action?: "preview" | "validate" | "save" | "save_env" | "services" | "up" | "up_service" | "start" | "stop" | "restart" | "logs" | "down"; service?: string; services?: string[]; detach?: boolean; projectId?: string; projectServiceKind?: "compose" | "template" } | null;
+  if (!body?.name || !body.yaml || !["preview", "validate", "save", "save_env", "services", "up", "up_service", "start", "stop", "restart", "logs", "down"].includes(body.action ?? "")) return privateJson({ error: "name, yaml and a valid action are required" }, { status: 400 });
   if (body.projectId && (!vesselProjectById(body.projectId) || !["compose", "template"].includes(body.projectServiceKind ?? ""))) return privateJson({ error: "The Vessel project or service type is invalid" }, { status: 400 });
   if (!validName(body.name) || body.yaml.length > 2_000_000) return privateJson({ error: "Invalid Compose project name or file is too large" }, { status: 400 });
   if (body.env !== undefined && (typeof body.env !== "string" || body.env.length > 1_000_000)) return privateJson({ error: "The .env file exceeds the 1 MB limit." }, { status: 400 });
@@ -326,7 +326,7 @@ export async function postCompose(request: Request) {
       await rm(validationDirectory, { recursive: true, force: true });
     }
     if (validation.code !== 0) return privateJson({ ok: false, action: body.action, error: "Compose validation failed. Review the configuration and validate it again.", details: validation.output }, { status: 422 });
-    if (body.envEdited && typeof body.env === "string" && (body.action === "up" || body.action === "up_service")) {
+    if (body.envEdited && typeof body.env === "string" && ["up", "up_service", "start", "stop", "restart"].includes(body.action ?? "")) {
       if (body.env.length > 1_000_000) return privateJson({ error: "The .env file exceeds the 1 MB limit." }, { status: 400 });
       const sourceFile = await discoveredComposeHostFile(body.name);
       if (sourceFile && !isVesselManagedComposePath(sourceFile)) {
@@ -338,7 +338,7 @@ export async function postCompose(request: Request) {
       }
     }
     let source = "vessel";
-    if (body.action === "up" || body.action === "up_service") {
+    if (["up", "up_service", "start", "stop", "restart", "down"].includes(body.action ?? "")) {
       const sourceFile = await discoveredComposeHostFile(body.name);
       if (sourceFile && !isVesselManagedComposePath(sourceFile)) {
         await writeComposeFileToHost(sourceFile, body.yaml);
@@ -346,6 +346,16 @@ export async function postCompose(request: Request) {
       }
     }
     await saveCompose(body.name, body.yaml);
+    if (body.action === "services") {
+      const dir = await mkdtemp(join(/* turbopackIgnore: true */ root, body.name, ".vessel-services-"));
+      try {
+        const file = join(dir, "compose.yaml");
+        await writeFile(file, body.yaml, "utf8");
+        const result = await runCompose(body.name, ["config", "--services"], file, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
+        if (result.code !== 0) return privateJson({ error: "Compose could not list services", details: result.output }, { status: 422 });
+        return privateJson({ ok: true, services: result.output.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) });
+      } finally { await rm(dir, { recursive: true, force: true }); }
+    }
     if (body.action === "up_service") {
       const configuredServices = await runCompose(body.name, ["config", "--services"], undefined, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
       if (configuredServices.code !== 0) return privateJson({ error: "Compose could not list services in this project" }, { status: 422 });
@@ -354,7 +364,20 @@ export async function postCompose(request: Request) {
       const result = await runCompose(body.name, ["up", "-d", "--no-deps", body.service!], undefined, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
       return privateJson({ ok: result.code === 0, action: body.action, service: body.service, source, ...(result.code === 0 ? {} : { error: "The Compose service could not be applied. Check the project and Docker Engine state." }) }, { status: result.code === 0 ? 200 : 502 });
     }
-    const result = await runCompose(body.name, [body.action === "up" ? "up" : "down", ...(body.action === "up" ? ["-d", "--remove-orphans"] : ["--remove-orphans"])], undefined, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
+    const selected = Array.isArray(body.services) ? [...new Set(body.services)] : [];
+    if (selected.length > 100 || selected.some((service) => typeof service !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(service))) return privateJson({ error: "Invalid Compose service selection" }, { status: 400 });
+    const configured = await runCompose(body.name, ["config", "--services"], undefined, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
+    const available = configured.output.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    if (configured.code !== 0 || selected.some((service) => !available.includes(service))) return privateJson({ error: "One or more selected services do not exist in this Compose project" }, { status: 422 });
+    if (["start", "stop", "restart", "logs"].includes(body.action ?? "")) {
+      const args = [body.action!, ...(body.action === "logs" ? ["--tail", "200", "--no-color"] : []), ...selected];
+      const result = await runCompose(body.name, args, undefined, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
+      return privateJson({ ok: result.code === 0, action: body.action, output: result.output, source }, { status: result.code === 0 ? 200 : 502 });
+    }
+    const args = body.action === "up"
+      ? ["up", ...(body.detach === false ? [] : ["--detach"]), ...(body.detach === false ? [] : ["--remove-orphans"]), "--build", ...selected]
+      : ["down", "--remove-orphans"];
+    const result = await runCompose(body.name, args, undefined, sourceDirectory, 12000, environmentProjectId ?? undefined, body.env);
     if (result.code === 0 && body.action === "up" && body.projectId) {
       addVesselProjectService({ projectId: body.projectId, kind: body.projectServiceKind ?? "compose", name: body.name, description: "Docker Compose", targetType: "compose", targetRef: body.name });
     }

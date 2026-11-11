@@ -1,8 +1,10 @@
 FROM golang:1.23-alpine AS backend-builder
 WORKDIR /src/backend
 COPY backend/go.mod ./
+COPY backend/go.sum ./
 COPY backend/main.go ./
 COPY backend/remote_engines.go ./
+COPY backend/terminal.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/vessel-backend .
 
 FROM node:22-alpine AS dependencies

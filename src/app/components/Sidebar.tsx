@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Activity, BellRing, Bot, Boxes, CalendarClock, ChevronUp, Container, Database, FolderKanban, GitBranch, Home, Images, KeyRound, LogIn, LogOut, Mail, Network, PanelLeftClose, PanelLeftOpen, Server, Settings2, ShieldCheck, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, Bot, Boxes, CalendarClock, ChevronUp, Container, Database, FolderKanban, GitBranch, Home, KeyRound, Layers, LogIn, LogOut, Mail, Network, PanelLeftClose, PanelLeftOpen, Server, Settings2, ShieldCheck, UserRound, Users, type LucideIcon } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { VesselMark } from "./VesselMark";
 import { UserAvatar } from "./UserAvatar";
@@ -11,7 +11,7 @@ import packageInfo from "../../../package.json";
 
 const sections: Array<{ en: string; es: string; items: Array<[string, LucideIcon, string, string]> }> = [
   { en: "WORKSPACE", es: "ESPACIO DE TRABAJO", items: [["/", Home, "Overview", "Resumen"], ["/projects", FolderKanban, "Projects", "Proyectos"], ["/compose", Boxes, "Compose projects", "Proyectos Compose"], ["/monitoring", BellRing, "Monitoring & alerts", "Monitoreo y alertas"]] },
-  { en: "DOCKER RESOURCES", es: "RECURSOS DOCKER", items: [["/containers", Container, "Containers", "Contenedores"], ["/images", Images, "Images", "Imágenes"], ["/volumes", Database, "Volumes", "Volúmenes"], ["/networks", Network, "Networks", "Redes"]] },
+  { en: "DOCKER RESOURCES", es: "RECURSOS DOCKER", items: [["/containers", Container, "Containers", "Contenedores"], ["/images", Layers, "Images", "Imágenes"], ["/volumes", Database, "Volumes", "Volúmenes"], ["/networks", Network, "Networks", "Redes"]] },
   { en: "AUTOMATION", es: "AUTOMATIZACIÓN", items: [["/jobs", CalendarClock, "Vessel Run", "Vessel Run"]] },
   { en: "ADMINISTRATION", es: "ADMINISTRACIÓN", items: [["/servers", Server, "Servers", "Servidores"], ["/ssh-keys", KeyRound, "SSH keys", "Claves SSH"], ["/registries", Container, "Registries", "Registries"], ["/git-providers", GitBranch, "Git providers", "Proveedores Git"], ["/users", Users, "Users", "Usuarios"], ["/sessions", ShieldCheck, "Sessions", "Sesiones"], ["/audit", Activity, "Audit log", "Auditoría"], ["/settings/ai", Bot, "AI", "IA"], ["/settings", Settings2, "Settings", "Configuración"]] },
 ];

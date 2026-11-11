@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Boxes, Check, CheckCircle2, CircleAlert, Copy, Eye, FilePlus2, FileText, LoaderCircle, Power, Rocket, Save, Wrench, X } from "lucide-react";
+import { Boxes, Check, CheckCircle2, CircleAlert, Copy, Eye, FilePlus2, FileText, LoaderCircle, Power, Rocket, Save, Wrench, X, Play, RotateCw, ScrollText, Square, Layers3 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { CodeLoadingSkeleton, ComposeProjectsLoadingSkeleton } from "@/app/components/LoadingSkeletons";
 import { ComposeYamlEditor } from "./ComposeYamlEditor";
@@ -9,7 +9,7 @@ import "../globals.css";
 
 const starter = `services:\n  web:\n    image: nginx:alpine\n    ports:\n      - "8080:80"`;
 type Project = { name: string; source: string; containers: string[]; configFiles?: string[]; status?: string };
-type ComposeAction = "preview" | "validate" | "save" | "save_env" | "up" | "up_service" | "down";
+type ComposeAction = "preview" | "validate" | "save" | "save_env" | "services" | "up" | "up_service" | "start" | "stop" | "restart" | "logs" | "down";
 type YamlDiagnostic = { message: string; line?: number; column?: number; detail?: string };
 
 function duplicateYamlKey(source: string): { key: string; line: number; firstLine: number; column: number } | null {
@@ -113,6 +113,11 @@ export default function ComposePage() {
   const [previewCopied, setPreviewCopied] = useState(false);
   const [yamlEdited, setYamlEdited] = useState(false);
   const [yamlValidation, setYamlValidation] = useState<{ state: "idle" | "checking" | "valid" | "invalid"; message?: string; line?: number; column?: number; detail?: string }>(({ state: "idle" }));
+  const [composeActionDialog, setComposeActionDialog] = useState<ComposeAction | null>(null);
+  const [composeServices, setComposeServices] = useState<string[]>([]);
+  const [selectedComposeServices, setSelectedComposeServices] = useState<string[]>([]);
+  const [composeDetach, setComposeDetach] = useState(true);
+  const [loadingComposeServices, setLoadingComposeServices] = useState(false);
   const validationSequence = useRef(0);
 
   useEffect(() => {
@@ -253,7 +258,7 @@ export default function ComposePage() {
     window.requestAnimationFrame(() => document.getElementById("compose-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
-  async function execute(action: ComposeAction) {
+  async function execute(action: ComposeAction, options: { services?: string[]; detach?: boolean } = {}) {
     if (!sourceLoaded || (action === "up_service" && !selectedService)) return;
     const duplicate = duplicateKeyDiagnostic(yaml, language);
     if (duplicate && action !== "down" && action !== "save_env") {
@@ -267,7 +272,7 @@ export default function ComposePage() {
       const response = await fetch("/api/compose", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, yaml, env: envFileText, envEdited, action, ...(action === "up_service" ? { service: selectedService } : {}), ...(projectContext ? { projectId: projectContext.id, projectServiceKind: projectContext.kind } : {}) }),
+        body: JSON.stringify({ name, yaml, env: envFileText, envEdited, action, ...(action === "up_service" ? { service: selectedService } : {}), ...(options.services ? { services: options.services } : {}), ...(options.detach !== undefined ? { detach: options.detach } : {}), ...(projectContext ? { projectId: projectContext.id, projectServiceKind: projectContext.kind } : {}) }),
         cache: "no-store",
       });
       const data = await response.json();
@@ -301,6 +306,8 @@ export default function ComposePage() {
             ? language === "es" ? "Proyecto desplegado y asociado al espacio de trabajo." : "Project deployed and linked to the workspace."
             : language === "es" ? "Proyecto desplegado." : "Project deployed.");
           void fetch("/api/compose", { cache: "no-store" }).then((response) => response.json()).then((payload) => setProjects(payload.data ?? [])).catch(() => undefined);
+        } else if (["start", "stop", "restart", "logs"].includes(action)) {
+          setOutput(data.output || (language === "es" ? "Acción Compose completada." : "Compose action completed."));
         } else {
           setOutput(language === "es" ? "Proyecto detenido." : "Project stopped.");
         }
@@ -321,6 +328,29 @@ export default function ComposePage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function openComposeAction(action: ComposeAction) {
+    if (selectedService && action === "up") { setSelectedComposeServices([selectedService]); }
+    else setSelectedComposeServices([]);
+    setComposeDetach(true);
+    setComposeActionDialog(action);
+    setLoadingComposeServices(true);
+    try {
+      const response = await fetch("/api/compose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, yaml, env: envFileText, action: "services", ...(projectContext ? { projectId: projectContext.id } : {}) }), cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not list Compose services");
+      setComposeServices(payload.services ?? []);
+      setSelectedComposeServices(selectedService && (payload.services ?? []).includes(selectedService) ? [selectedService] : (payload.services ?? []));
+    } catch (error) { setOutput(error instanceof Error ? error.message : (language === "es" ? "No se pudieron cargar los servicios Compose." : "Could not load Compose services.")); setComposeActionDialog(null); }
+    finally { setLoadingComposeServices(false); }
+  }
+
+  function confirmComposeAction() {
+    if (!composeActionDialog) return;
+    const action = composeActionDialog;
+    setComposeActionDialog(null);
+    void execute(action, { services: selectedComposeServices, detach: composeDetach });
   }
 
   async function openPreview() {
@@ -418,10 +448,12 @@ export default function ComposePage() {
             {envEdited ? <button type="button" className="compose-action compose-action-save" onClick={() => void execute("save_env")} disabled={busy || !sourceLoaded}><Save size={16} />{language === "es" ? "Guardar .env" : "Save .env"}</button> : null}
           </div>
           <div className="compose-editor-toolbar-group compose-editor-toolbar-primary">
-            {selectedService
-              ? <button className="primary-button compose-action compose-action-deploy" type="button" onClick={() => void execute("up_service")} disabled={busy || !canDeployCompose}><Rocket size={16} />{language === "es" ? `Aplicar a ${selectedService}` : `Apply to ${selectedService}`}</button>
-              : <button className="primary-button compose-action compose-action-deploy" type="button" onClick={() => void execute("up")} disabled={busy || !canDeployCompose}><Rocket size={16} />{language === "es" ? "Desplegar proyecto" : "Deploy project"}</button>}
-            {!selectedService ? <button className="compose-action compose-action-stop" type="button" onClick={() => void execute("down")} disabled={busy || !sourceLoaded}><Power size={15} />{language === "es" ? "Detener proyecto" : "Stop project"}</button> : null}
+            <button className="primary-button compose-action compose-action-deploy" type="button" onClick={() => void openComposeAction("up")} disabled={busy || !canDeployCompose}><Rocket size={16} />{selectedService ? (language === "es" ? `Aplicar a ${selectedService}` : `Apply to ${selectedService}`) : (language === "es" ? "Desplegar proyecto" : "Deploy project")}</button>
+            <button className="compose-action" type="button" onClick={() => void openComposeAction("start")} disabled={busy || !sourceLoaded}><Play size={15} />{language === "es" ? "Iniciar" : "Start"}</button>
+            <button className="compose-action" type="button" onClick={() => void openComposeAction("restart")} disabled={busy || !sourceLoaded}><RotateCw size={15} />{language === "es" ? "Reiniciar" : "Restart"}</button>
+            <button className="compose-action" type="button" onClick={() => void openComposeAction("stop")} disabled={busy || !sourceLoaded}><Square size={14} />{language === "es" ? "Detener" : "Stop"}</button>
+            <button className="compose-action" type="button" onClick={() => void openComposeAction("logs")} disabled={busy || !sourceLoaded}><ScrollText size={15} />Logs</button>
+            <button className="compose-action compose-action-stop" type="button" onClick={() => { if (window.confirm(language === "es" ? "¿Bajar el proyecto Compose completo? Los contenedores se detendrán y eliminarán; los volúmenes nombrados se conservarán." : "Bring the entire Compose project down? Containers will be stopped and removed; named volumes are preserved.")) void execute("down"); }} disabled={busy || !sourceLoaded}><Power size={15} />{language === "es" ? "Bajar proyecto" : "Down"}</button>
           </div>
         </div>
         <div className="compose-yaml-field">
@@ -445,6 +477,10 @@ export default function ComposePage() {
       <pre className="module-output">{output || (language === "es" ? "La validación y el resultado de Docker Compose aparecerán aquí." : "Docker Compose validation and results will appear here.")}</pre>
     </section>
 
+    {composeActionDialog ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setComposeActionDialog(null); }}><section className="confirm-modal compose-services-modal" role="dialog" aria-modal="true" aria-labelledby="compose-services-title"><header><div><span className="module-kicker">DOCKER COMPOSE</span><h2 id="compose-services-title">{composeActionDialog === "up" ? (language === "es" ? "Desplegar servicios" : "Deploy services") : composeActionDialog === "logs" ? "Logs" : composeActionDialog === "restart" ? (language === "es" ? "Reiniciar servicios" : "Restart services") : composeActionDialog === "start" ? (language === "es" ? "Iniciar servicios" : "Start services") : (language === "es" ? "Detener servicios" : "Stop services")}</h2><p>{language === "es" ? "Selecciona los servicios que quieres operar." : "Select the services you want to operate."}</p></div><button type="button" onClick={() => setComposeActionDialog(null)} aria-label={language === "es" ? "Cerrar" : "Close"}><X size={18} /></button></header>
+      {loadingComposeServices ? <div className="compose-services-loading"><LoaderCircle size={18} className="spinning" />{language === "es" ? "Leyendo servicios Compose…" : "Loading Compose services…"}</div> : <><div className="compose-services-list">{composeServices.map((service) => <label key={service}><input type="checkbox" checked={selectedComposeServices.includes(service)} onChange={(event) => setSelectedComposeServices((current) => event.target.checked ? [...current, service] : current.filter((item) => item !== service))} /><Layers3 size={16} /><span>{service}</span></label>)}</div>{composeActionDialog === "up" ? <label className="compose-detach-choice"><input type="checkbox" checked={composeDetach} onChange={(event) => setComposeDetach(event.target.checked)} /><span><strong>{language === "es" ? "Ejecutar en segundo plano (up -d)" : "Run in background (up -d)"}</strong><small>{language === "es" ? "Desmárcalo para mantener el proceso en primer plano (up) y ver su salida mientras permanece activo." : "Uncheck to keep the process attached (up) and view its output while it runs."}</small></span></label> : null}</>}
+      <footer className="modal-actions"><button type="button" onClick={() => setComposeActionDialog(null)}>{language === "es" ? "Cancelar" : "Cancel"}</button><button type="button" className="primary-button" onClick={confirmComposeAction} disabled={loadingComposeServices || (composeActionDialog !== "up" && selectedComposeServices.length === 0)}>{language === "es" ? "Continuar" : "Continue"}</button></footer>
+    </section></div> : null}
     {previewOpen ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !previewBusy) setPreviewOpen(false); }}><section className="confirm-modal compose-preview-modal" role="dialog" aria-modal="true" aria-labelledby="compose-preview-title"><header className="compose-preview-heading"><span className="compose-preview-mark"><Boxes size={20} /></span><div><span className="module-kicker">DOCKER COMPOSE</span><h2 id="compose-preview-title">{language === "es" ? "Compose convertido" : "Converted Compose"}</h2><p>{language === "es" ? `Vista previa de ${name} generada por Docker.` : `Docker-generated preview for ${name}.`}</p></div><button className="compose-preview-close" type="button" onClick={() => setPreviewOpen(false)} disabled={previewBusy} aria-label={language === "es" ? "Cerrar vista previa" : "Close preview"}><X size={18} /></button></header>
       <p className="compose-preview-note">{language === "es" ? "Docker normaliza el archivo y las variables quedan sin resolver para proteger valores del entorno. Para convertirlo con dominios se necesita configurar al menos uno; Vessel aún no ofrece configuración de dominios para este proyecto." : "Docker normalizes the file and leaves variables unresolved to protect environment values. Domain conversion requires at least one configured domain; Vessel does not yet provide domain settings for this project."}</p>
       {previewError ? <div className="compose-preview-error" role="alert"><CircleAlert size={16} /><div><strong>{previewError}</strong>{previewYaml ? <pre>{previewYaml}</pre> : null}</div></div> : null}

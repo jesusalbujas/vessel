@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,8 +20,8 @@ import (
 )
 
 const (
-	defaultAddr    = "127.0.0.1:9100"
-	defaultSocket  = "/var/run/docker.sock"
+	defaultAddr   = "127.0.0.1:9100"
+	defaultSocket = "/var/run/docker.sock"
 	// v1.41 is supported by Docker Engine 20.10+ and keeps Vessel compatible
 	// with older production hosts as well as current engines.
 	apiVersionPath = "/v1.41"
@@ -43,7 +45,7 @@ func newDockerClient() (*dockerClient, error) {
 			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
 		},
 	}
-	return &dockerClient{client: &http.Client{Transport: transport, Timeout: 30 * time.Second}, baseURL: "http://docker" + apiVersionPath}, nil
+	return &dockerClient{client: &http.Client{Transport: transport}, baseURL: "http://docker" + apiVersionPath}, nil
 }
 
 func (d *dockerClient) request(ctx context.Context, w http.ResponseWriter, method, path string, body io.Reader) {
@@ -167,10 +169,43 @@ func startFrontend() (*exec.Cmd, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
+	frontendPort := os.Getenv("VESSEL_FRONTEND_PORT")
+	if frontendPort == "" {
+		frontendPort = "3001"
+	}
+	cmd.Env = append(cmd.Env, "PORT="+frontendPort, "HOSTNAME=127.0.0.1")
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	return cmd, nil
+}
+
+func publicHandler(docker *dockerClient) (http.Handler, error) {
+	frontendPort := os.Getenv("VESSEL_FRONTEND_PORT")
+	if frontendPort == "" {
+		frontendPort = "3001"
+	}
+	target, err := url.Parse("http://127.0.0.1:" + frontendPort)
+	if err != nil {
+		return nil, err
+	}
+	frontend := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := frontend.Director
+	frontend.Director = func(request *http.Request) {
+		host := request.Host
+		scheme := requestScheme(request)
+		originalDirector(request)
+		request.Host = host
+		request.Header.Set("X-Forwarded-Proto", scheme)
+	}
+	frontend.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		log.Printf("Vessel frontend proxy failed: %v", err)
+		http.Error(w, "Vessel frontend is starting", http.StatusBadGateway)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/container-terminal", terminalHandler(docker))
+	mux.Handle("/", frontend)
+	return mux, nil
 }
 
 func main() {
@@ -183,10 +218,30 @@ func main() {
 		addr = defaultAddr
 	}
 	server := &http.Server{Addr: addr, Handler: dockerHandler(docker), ReadHeaderTimeout: 5 * time.Second}
+	publicAddr := os.Getenv("VESSEL_PUBLIC_ADDR")
+	if publicAddr == "" {
+		publicAddr = ":3000"
+	}
+	publicMux, err := publicHandler(docker)
+	if err != nil {
+		log.Fatal(err)
+	}
+	publicServer := &http.Server{Addr: publicAddr, Handler: publicMux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Printf("Vessel Go backend listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("backend stopped: %v", err)
+		}
+	}()
+	go func() {
+		log.Printf("Vessel public gateway listening on %s (frontend port %s)", publicAddr, func() string {
+			if p := os.Getenv("VESSEL_FRONTEND_PORT"); p != "" {
+				return p
+			}
+			return "3001"
+		}())
+		if err := publicServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("public gateway stopped: %v", err)
 		}
 	}()
 
@@ -202,12 +257,14 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = server.Shutdown(ctx)
+		_ = publicServer.Shutdown(ctx)
 		_ = frontend.Process.Signal(syscall.SIGTERM)
 	case err := <-waitCommand(frontend):
 		if err != nil {
 			log.Printf("frontend stopped: %v", err)
 		}
 		_ = server.Shutdown(context.Background())
+		_ = publicServer.Shutdown(context.Background())
 	}
 }
 

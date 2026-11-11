@@ -164,10 +164,10 @@ export default function ProjectServicePage() {
     return () => window.clearInterval(timer);
   }, [expandedDeploymentId, expandedDeploymentStatus, language]);
 
-  async function deployApplication(sourceId: string, operation: "deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" = "deploy") {
+  async function deployApplication(sourceId: string, operation: "deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" | "restart" | "logs" | "down" = "deploy", options: { services?: string[]; detach?: boolean } = {}) {
     pendingManualDeploymentNotice.current = true;
     try {
-      const response = await fetch("/api/deployments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "sync", id: sourceId, operation }) });
+      const response = await fetch("/api/deployments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "sync", id: sourceId, operation, ...options }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(localizeProjectError(payload.error ?? "Could not start deployment.", language));
       await load(true);

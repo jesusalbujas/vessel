@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "@xterm/xterm/css/xterm.css";
 import { I18nProvider } from "@/lib/i18n";
 import { AppFrame } from "./components/AppFrame";
 

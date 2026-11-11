@@ -28,7 +28,8 @@ const checkoutRoot = resolve(/* turbopackIgnore: true */ process.env.VESSEL_GIT_
 const activeDeployments = new Set<string>();
 const activeSourceChecks = new Set<string>();
 type GitDeploymentTarget = { ref: string; commit?: string; eventType?: "push" | "tag" | "release"; refName?: string };
-export type GitDeploymentOperation = "deploy" | "rebuild" | "fresh_volumes" | "start" | "stop";
+export type GitDeploymentOperation = "deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" | "restart" | "logs" | "down";
+export type GitDeploymentOptions = { services?: string[]; detach?: boolean };
 const queuedDeployments = new Map<string, Array<{ trigger: "manual" | "automatic"; target?: GitDeploymentTarget; deploymentId: string }>>();
 const activeBuildProcesses = new Map<string, ChildProcess>();
 const activeDeploymentIds = new Map<string, string>();
@@ -225,6 +226,21 @@ async function credentialsFor(runtime: NonNullable<ReturnType<typeof gitSourceRu
   return { token: runtime.accessToken, username: "x-access-token" };
 }
 
+export async function listGitComposeServices(id: string): Promise<string[]> {
+  const runtime = gitSourceRuntimeData(id);
+  if (!runtime) throw new Error("Git source not found");
+  const credentials = await credentialsFor(runtime);
+  const checkout = await ensureCheckout(id, runtime.source.repository, runtime.source.branch, credentials.token, credentials.username, runtime.source.enableSubmodules);
+  const file = await composeFilePath(checkout, runtime.source.composePath);
+  const env = await createTemporaryEnv(runtime.secrets);
+  try {
+    const project = safeProjectName(runtime.source.name);
+    const result = await run("docker", ["compose", "--project-name", project, "--env-file", env.path, "--file", file, "config", "--services"], checkout, safeCommandEnvironment());
+    if (result.code !== 0) throw new Error("No se pudieron cargar los servicios del Compose configurado");
+    return [...new Set(result.stdout.split(/\r?\n/).map((service) => service.trim()).filter((service) => /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(service)))];
+  } finally { await rm(env.directory, { recursive: true, force: true }); }
+}
+
 function redactDeploymentOutput(output: string, secrets: Record<string, string>) {
   let redacted = output;
   for (const secret of Object.values(secrets)) {
@@ -276,7 +292,7 @@ async function readContainerNetworks(project?: string): Promise<ContainerNetwork
   return containers;
 }
 
-export function startGitDeployment(id: string, trigger: "manual" | "automatic" = "manual", target?: GitDeploymentTarget, queuedDeploymentId?: string, operation: GitDeploymentOperation = "deploy") {
+export function startGitDeployment(id: string, trigger: "manual" | "automatic" = "manual", target?: GitDeploymentTarget, queuedDeploymentId?: string, operation: GitDeploymentOperation = "deploy", options: GitDeploymentOptions = {}) {
   if (activeDeployments.has(id)) throw new Error("Ya hay un despliegue en curso para esta fuente");
   const runtime = gitSourceRuntimeData(id);
   if (!runtime) throw new Error("Fuente Git no encontrada");
@@ -287,7 +303,7 @@ export function startGitDeployment(id: string, trigger: "manual" | "automatic" =
   activeDeploymentIds.set(id, deployment.id);
   updateGitSourceState(id, { lastStatus: "deploying", lastError: null });
   appendGitDeploymentLog(deployment.id, `Deployment queued (${trigger}).\nRepository: ${runtime.source.repository}\n${target ? `Git ref: ${target.ref}` : `Branch: ${runtime.source.branch}`}\n`);
-  void performGitDeployment(id, deployment.id, runtime, target, operation).catch(() => undefined).finally(() => {
+  void performGitDeployment(id, deployment.id, runtime, target, operation, options).catch(() => undefined).finally(() => {
     activeDeployments.delete(id);
     activeBuildProcesses.delete(id);
     activeDeploymentIds.delete(id);
@@ -384,7 +400,7 @@ export function dispatchGitWebhook(providerId: string, deliveryId: string, event
   return { accepted: true, duplicate: false, queued: queued.length };
 }
 
-async function performGitDeployment(id: string, deploymentId: string, runtime: NonNullable<ReturnType<typeof gitSourceRuntimeData>>, target?: GitDeploymentTarget, operation: GitDeploymentOperation = "deploy") {
+async function performGitDeployment(id: string, deploymentId: string, runtime: NonNullable<ReturnType<typeof gitSourceRuntimeData>>, target?: GitDeploymentTarget, operation: GitDeploymentOperation = "deploy", options: GitDeploymentOptions = {}) {
   let envDirectory: string | null = null;
   let targetCommit: string | null = null;
   let targetCommitTitle: string | null = null;
@@ -418,7 +434,10 @@ async function performGitDeployment(id: string, deploymentId: string, runtime: N
     const resolved = await run("docker", ["compose", "--project-name", name, "--env-file", temp.path, "--file", composeFile, "config", "--format", "json"], repositoryDirectory, safeCommandEnvironment());
     if (resolved.code !== 0) throw new Error("Could not inspect Compose port configuration.");
     const configuration = JSON.parse(resolved.stdout) as { services: Record<string, { ports?: PublishedPort[]; profiles?: string[]; network_mode?: string }> };
-    const portServices = Object.entries(configuration.services).filter(([, service]) => !service.profiles?.length && service.network_mode !== "host" && service.ports?.length);
+    const selectedServices = [...new Set(options.services ?? [])];
+    if (selectedServices.length > 100 || selectedServices.some((service) => !Object.hasOwn(configuration.services, service))) throw new Error("One or more selected Compose services do not exist");
+    const activeServiceNames = selectedServices.length ? selectedServices : Object.keys(configuration.services);
+    const portServices = Object.entries(configuration.services).filter(([serviceName, service]) => activeServiceNames.includes(serviceName) && !service.profiles?.length && service.network_mode !== "host" && service.ports?.length);
     const ports = portServices.flatMap(([, service]) => service.ports ?? []);
     if (operation !== "stop") {
       const conflict = portConflict(ports, await readContainerNetworks(), name);
@@ -428,11 +447,17 @@ async function performGitDeployment(id: string, deploymentId: string, runtime: N
     if (operation === "stop") {
       updateGitDeployment(deploymentId, { phase: "stopping" });
       appendGitDeploymentLog(deploymentId, "\nStopping Compose services…\n");
-      await runCompose(repositoryDirectory, composeFile, name, temp.path, ["stop"], deploymentId, runtime.secrets, id);
+      await runCompose(repositoryDirectory, composeFile, name, temp.path, ["stop", ...selectedServices], deploymentId, runtime.secrets, id);
     } else if (operation === "start") {
       updateGitDeployment(deploymentId, { phase: "starting" });
       appendGitDeploymentLog(deploymentId, "\nStarting Compose services…\n");
-      await runCompose(repositoryDirectory, composeFile, name, temp.path, ["up", "--detach"], deploymentId, runtime.secrets, id);
+      await runCompose(repositoryDirectory, composeFile, name, temp.path, ["up", ...(options.detach === false ? [] : ["--detach"]), ...selectedServices], deploymentId, runtime.secrets, id);
+    } else if (operation === "restart" || operation === "logs") {
+      updateGitDeployment(deploymentId, { phase: operation === "logs" ? "reading_logs" : "restarting" });
+      await runCompose(repositoryDirectory, composeFile, name, temp.path, [operation, ...(operation === "logs" ? ["--tail", "200", "--no-color"] : []), ...selectedServices], deploymentId, runtime.secrets, id);
+    } else if (operation === "down") {
+      updateGitDeployment(deploymentId, { phase: "stopping" });
+      await runCompose(repositoryDirectory, composeFile, name, temp.path, ["down", "--remove-orphans"], deploymentId, runtime.secrets, id);
     } else {
       if (operation === "fresh_volumes") {
         updateGitDeployment(deploymentId, { phase: "cleaning_volumes" });
@@ -444,7 +469,7 @@ async function performGitDeployment(id: string, deploymentId: string, runtime: N
       const needsNetworkRecovery = existingContainers.some((container) =>
         portServices.some(([serviceName]) => serviceName === container.service) && missingPublishedPort(container),
       );
-      const upArgs = ["up", "--detach", "--remove-orphans", "--build"];
+      const upArgs = ["up", ...(options.detach === false ? [] : ["--detach", "--remove-orphans"]), "--build", ...selectedServices];
       if (operation === "rebuild" || operation === "fresh_volumes" || needsNetworkRecovery) upArgs.push("--force-recreate");
       await runCompose(repositoryDirectory, composeFile, name, temp.path, upArgs, deploymentId, runtime.secrets, id);
       appendGitDeploymentLog(deploymentId, "\nVerifying published container ports…\n");

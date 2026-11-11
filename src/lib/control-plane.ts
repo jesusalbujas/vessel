@@ -32,6 +32,8 @@ export const permissionCatalog = [
     { id: `${area}.view`, area, action: "view" }, { id: `${area}.manage`, area, action: "manage" },
   ]),
   { id: "containers.logs", area: "containers", action: "logs" },
+  { id: "containers.exec", area: "containers", action: "exec" },
+  { id: "containers.files", area: "containers", action: "files" },
   { id: "ssh_keys.manage", area: "servers", action: "ssh_keys" },
   { id: "settings.manage", area: "settings", action: "manage" },
   { id: "ai.manage", area: "ai", action: "manage" },
@@ -42,7 +44,7 @@ export type PermissionId = typeof permissionCatalog[number]["id"];
 export type VesselRole = { id: string; name: string; description: string; permissions: PermissionId[]; system: boolean };
 const roleSeeds: VesselRole[] = [
   { id: "administrator", name: "Administrator", description: "Full control-plane access.", permissions: ["*" as PermissionId], system: true },
-  { id: "operator", name: "Operator", description: "Manage Docker resources and deployments.", permissions: ["overview.view", "containers.view", "containers.manage", "containers.logs", "images.view", "images.manage", "volumes.view", "volumes.manage", "networks.view", "networks.manage", "projects.view", "projects.manage", "deployments.view", "deployments.manage", "monitoring.view"], system: true },
+  { id: "operator", name: "Operator", description: "Manage Docker resources and deployments.", permissions: ["overview.view", "containers.view", "containers.manage", "containers.logs", "containers.exec", "containers.files", "images.view", "images.manage", "volumes.view", "volumes.manage", "networks.view", "networks.manage", "projects.view", "projects.manage", "deployments.view", "deployments.manage", "monitoring.view"], system: true },
   { id: "viewer", name: "Viewer", description: "Read Docker resources and project status.", permissions: ["overview.view", "containers.view", "images.view", "volumes.view", "networks.view", "projects.view", "deployments.view", "monitoring.view"], system: true },
 ];
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { Activity, ArrowDownToLine, ArrowRight, Boxes, CircleAlert, CircleCheck, CirclePause, CirclePlay, Container, Cpu, Database, FolderKanban, FolderOpen, HardDrive, Images, MemoryStick, Monitor, Network, RefreshCw, Server } from "lucide-react";
+import { Activity, ArrowDownToLine, ArrowRight, Boxes, CircleAlert, CircleCheck, CirclePause, CirclePlay, Container, Cpu, Database, FolderKanban, FolderOpen, HardDrive, Layers, MemoryStick, Monitor, Network, RefreshCw, Server } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { OverviewLoadingSkeleton } from "@/app/components/LoadingSkeletons";
 
@@ -168,7 +168,7 @@ function IoHistoryChart({ samples, firstKey, secondKey, firstLabel, secondLabel,
 
 function DockerDiskUsage({ disk, error, es }: { disk: DockerDiskMetrics | null; error: string | null; es: boolean }) {
   const rows = disk ? [
-    { key: "images", label: es ? "Imágenes" : "Images", value: disk.images, icon: Images },
+    { key: "images", label: es ? "Imágenes" : "Images", value: disk.images, icon: Layers },
     { key: "containers", label: es ? "Contenedores" : "Containers", value: disk.containers, icon: Container },
     { key: "volumes", label: es ? "Volúmenes" : "Volumes", value: disk.volumes, icon: Database },
     { key: "buildCache", label: es ? "Caché de compilación" : "Build cache", value: disk.buildCache, icon: Boxes },
@@ -486,7 +486,7 @@ export default function OverviewPage() {
     { href: "/projects", icon: FolderKanban, label: es ? "Proyectos" : "Projects", value: snapshot?.workspaces.length },
     { href: "/compose", icon: Boxes, label: es ? "Proyectos Compose" : "Compose projects", value: snapshot?.projects.length },
     { href: "/containers", icon: Container, label: es ? "Contenedores" : "Containers", value: snapshot?.containers.length },
-    { href: "/images", icon: Images, label: es ? "Imágenes" : "Images", value: snapshot?.images },
+    { href: "/images", icon: Layers, label: es ? "Imágenes" : "Images", value: snapshot?.images },
     { href: "/volumes", icon: Database, label: es ? "Volúmenes" : "Volumes", value: snapshot?.volumes },
     { href: "/networks", icon: Network, label: es ? "Redes" : "Networks", value: snapshot?.networks },
   ];

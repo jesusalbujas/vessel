@@ -583,7 +583,7 @@ func newRemoteDockerClient(engine remoteEngine) (*dockerClient, func(), error) {
 		MaxConnsPerHost:     4,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	return &dockerClient{client: &http.Client{Transport: transport, Timeout: 45 * time.Second}, baseURL: "http://docker" + apiVersionPath}, cleanup, nil
+	return &dockerClient{client: &http.Client{Transport: transport}, baseURL: "http://docker" + apiVersionPath}, cleanup, nil
 }
 
 func dialDockerSSH(ctx context.Context, engine remoteEngine, keyPath, knownHostsPath string) (net.Conn, error) {

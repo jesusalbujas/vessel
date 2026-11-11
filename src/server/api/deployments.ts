@@ -23,7 +23,7 @@ import {
   type GitProviderKind,
 } from "@/lib/control-plane";
 import { inspectGitRepository, listGitRepositories, readGitRepositoryComposeFile } from "@/lib/git-provider-clients";
-import { cancelQueuedGitDeployments, killGitBuild, startGitDeployment, type GitDeploymentOperation } from "@/lib/git-deployments";
+import { cancelQueuedGitDeployments, killGitBuild, listGitComposeServices, startGitDeployment, type GitDeploymentOperation } from "@/lib/git-deployments";
 
 function privateJson(data: unknown, init?: ResponseInit) {
   const headers = new Headers(init?.headers);
@@ -219,13 +219,19 @@ export async function postDeployments(request: Request) {
       const source = canUseSource(body.id, role);
       if (!source) return privateJson({ error: "Git source not found or unavailable" }, { status: 404 });
       if (source.providerId && !canUseProvider(source.providerId, role)) return privateJson({ error: "Reconnect this Git provider before deploying" }, { status: 409 });
-      const allowedOperations: GitDeploymentOperation[] = ["deploy", "rebuild", "fresh_volumes", "start", "stop"];
+      const allowedOperations: GitDeploymentOperation[] = ["deploy", "rebuild", "fresh_volumes", "start", "stop", "restart", "logs", "down"];
       const operation = typeof body.operation === "string" && allowedOperations.includes(body.operation as GitDeploymentOperation)
         ? body.operation as GitDeploymentOperation
         : "deploy";
-      const result = startGitDeployment(body.id, "manual", undefined, undefined, operation);
+      const services = Array.isArray(body.services) && body.services.length <= 100 && body.services.every((name) => typeof name === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(name)) ? body.services as string[] : undefined;
+      if (body.services !== undefined && !services) return privateJson({ error: "Invalid Compose service selection" }, { status: 400 });
+      const result = startGitDeployment(body.id, "manual", undefined, undefined, operation, { services, detach: body.detach !== false });
       const { logs: _logs, ...summary } = result;
       return privateJson({ ok: true, data: summary }, { status: 202 });
+    }
+    if (body.action === "list_compose_services") {
+      if (typeof body.id !== "string" || !canUseSource(body.id, role)) return privateJson({ error: "Git source not found or unavailable" }, { status: 404 });
+      return privateJson({ services: await listGitComposeServices(body.id) });
     }
     if (body.action === "set_secret") {
       if (typeof body.id !== "string" || !canUseSource(body.id, role)) return privateJson({ error: "Git source not found or unavailable" }, { status: 404 });
