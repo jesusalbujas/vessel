@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { authenticatedUser, mutationUser } from "@/lib/control-plane";
+import { authenticatedUser, mutationUser, userHasPermission } from "@/lib/control-plane";
 import { deleteSSHKey, listSSHKeys, saveSSHKey } from "@/lib/ssh-keys";
 
 const execFileAsync = promisify(execFile);
@@ -13,14 +13,14 @@ function json(data: unknown, status = 200) { return NextResponse.json(data, { st
 export function getSSHKeys(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return json({ error: "Authentication required" }, 401);
-  if (user.role !== "administrator") return json({ error: "Administrator access required" }, 403);
+  if (!userHasPermission(user, "ssh_keys.manage")) return json({ error: "Permission denied" }, 403);
   return json({ data: listSSHKeys() });
 }
 
 export async function postSSHKeys(request: Request) {
   const user = mutationUser(request);
   if (!user) return json({ error: "Authentication required" }, 401);
-  if (user.role !== "administrator") return json({ error: "Administrator access required" }, 403);
+  if (!userHasPermission(user, "ssh_keys.manage")) return json({ error: "Permission denied" }, 403);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.length > 80) return json({ error: "Enter a key name." }, 400);
   const directory = await mkdtemp(join(tmpdir(), "vessel-ssh-key-"));
@@ -83,7 +83,7 @@ export async function postSSHKeys(request: Request) {
 export function deleteSSHKeys(request: Request) {
   const user = mutationUser(request);
   if (!user) return json({ error: "Authentication required" }, 401);
-  if (user.role !== "administrator") return json({ error: "Administrator access required" }, 403);
+  if (!userHasPermission(user, "ssh_keys.manage")) return json({ error: "Permission denied" }, 403);
   const id = new URL(request.url).searchParams.get("id") ?? "";
   if (!/^[a-f0-9-]{36}$/i.test(id)) return json({ error: "Invalid SSH key ID." }, 400);
   return json({ ok: deleteSSHKey(id) });

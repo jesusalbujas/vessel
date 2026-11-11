@@ -6,6 +6,7 @@ import {
   createGitProviderState,
   gitProviderRuntimeData,
   type GitProviderRuntime,
+  userHasPermission,
 } from "@/lib/control-plane";
 import { completeGitOAuth, verifyGitHubInstallation } from "@/lib/git-provider-clients";
 import { gitProviderBaseUrl, isSecureGitProviderUrl } from "@/server/api/git-provider-url";
@@ -13,7 +14,7 @@ import { gitProviderBaseUrl, isSecureGitProviderUrl } from "@/server/api/git-pro
 function admin(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return null;
-  return user.role === "administrator" ? user : null;
+  return userHasPermission(user, "git.manage") ? user : null;
 }
 
 function callbackBaseUrl(request: Request) {

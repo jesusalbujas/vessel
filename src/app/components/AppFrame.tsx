@@ -8,6 +8,7 @@ import VesselSelect from "@/app/components/VesselSelect";
 import { Sidebar } from "./Sidebar";
 import { ToastNotice, VESSEL_NOTICE_EVENT, type Notice } from "./ToastNotice";
 import { VesselTooltipLayer } from "./VesselTooltipLayer";
+import { ResourceNotificationBell } from "./ResourceNotificationBell";
 
 export function AppFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -71,6 +72,33 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(VESSEL_NOTICE_EVENT, showNotice);
   }, []);
   useEffect(() => {
+    if (pathname === "/login") return;
+    let stopped = false;
+    const pollAlerts = async () => {
+      try {
+        const response = await fetch("/api/resource-alerts", { cache: "no-store" });
+        if (!response.ok || stopped) return;
+        const payload = await response.json() as { events?: Array<{ id: string; ruleName: string; engineName: string; metric: string; value: number; state: string }> };
+        const seenKey = "vessel-resource-alert-notices";
+        const seen = JSON.parse(window.localStorage.getItem(seenKey) || "{}") as Record<string, string>;
+        const showActiveAfterLogin = window.sessionStorage.getItem("vessel-show-active-alerts-after-login") === "1";
+        window.sessionStorage.removeItem("vessel-show-active-alerts-after-login");
+        const next = (showActiveAfterLogin ? payload.events?.find((alert) => alert.state === "active") : undefined)
+          ?? (payload.events ?? []).find((alert) => alert.state === "active" ? seen[alert.id] !== "active" : seen[alert.id] === "active");
+        if (!next) return;
+        const metric = next.metric === "cpu" ? "CPU" : next.metric === "memory" ? (language === "es" ? "memoria" : "memory") : (language === "es" ? "disco" : "disk");
+        const resolved = next.state === "resolved";
+        setNotice({ kind: resolved ? "success" : "error", title: resolved ? (language === "es" ? `Alerta resuelta · ${next.ruleName}` : `Alert resolved · ${next.ruleName}`) : (language === "es" ? `Alerta de recursos · ${next.ruleName}` : `Resource alert · ${next.ruleName}`), detail: resolved ? (language === "es" ? `${next.engineName}: ${metric} volvió al rango.` : `${next.engineName}: ${metric} returned to range.`) : (language === "es" ? `${next.engineName}: ${metric} en ${Number(next.value).toFixed(1)}%.` : `${next.engineName}: ${metric} at ${Number(next.value).toFixed(1)}%.`) });
+        seen[next.id] = next.state;
+        const entries = Object.entries(seen).slice(-300);
+        window.localStorage.setItem(seenKey, JSON.stringify(Object.fromEntries(entries)));
+      } catch { /* Alert polling must not interrupt navigation or other toasts. */ }
+    };
+    void pollAlerts();
+    const timer = window.setInterval(() => void pollAlerts(), 30_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [pathname, language]);
+  useEffect(() => {
     const handleEngineConnectivity = (event: Event) => {
       const detail = (event as CustomEvent<{ engineId?: string; online?: boolean }>).detail;
       if (!detail?.engineId || typeof detail.online !== "boolean") return;
@@ -114,6 +142,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
       <div className="app-utilities">
         <div className="app-engine-switcher"><span><Server size={16} />Engine</span><VesselSelect aria-label={language === "es" ? "Engine Docker activo" : "Active Docker Engine"} value={engineId} onChange={(event) => selectEngine(event.target.value)}><option value="local" data-status={engineAvailability.local} data-status-label={language === "es" ? "Sin conexión" : "Unavailable"}>{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id} data-status={engineAvailability[server.id]} data-status-label={language === "es" ? "Sin conexión" : "Unavailable"}>{server.name} · {server.host}</option>)}</VesselSelect></div>
         <div className="app-utility-actions">
+          <ResourceNotificationBell />
           <button type="button" onClick={() => setDark((value) => !value)} aria-label={dark ? (language === "es" ? "Modo claro" : "Light mode") : (language === "es" ? "Modo oscuro" : "Dark mode")}><span>{dark ? <Sun size={17} /> : <Moon size={17} />}</span>{dark ? (language === "es" ? "Claro" : "Light") : (language === "es" ? "Oscuro" : "Dark")}</button>
           <button type="button" onClick={() => setLanguage(language === "es" ? "en" : "es")} aria-label={language === "es" ? "Change to English" : "Cambiar a español"}><Languages size={17} />{language.toUpperCase()}</button>
         </div>

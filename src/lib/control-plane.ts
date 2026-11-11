@@ -26,6 +26,26 @@ export type PlatformSettings = {
   oauthAuthStyle: "auto" | "basic" | "post";
 };
 
+export const permissionCatalog = [
+  { id: "overview.view", area: "overview", action: "view" },
+  ...(["containers", "images", "volumes", "networks", "compose", "projects", "deployments", "monitoring", "automation", "registries", "git", "servers"] as const).flatMap((area) => [
+    { id: `${area}.view`, area, action: "view" }, { id: `${area}.manage`, area, action: "manage" },
+  ]),
+  { id: "containers.logs", area: "containers", action: "logs" },
+  { id: "ssh_keys.manage", area: "servers", action: "ssh_keys" },
+  { id: "settings.manage", area: "settings", action: "manage" },
+  { id: "ai.manage", area: "ai", action: "manage" },
+  { id: "audit.view", area: "audit", action: "view" },
+  { id: "sessions.manage", area: "sessions", action: "manage" },
+] as const;
+export type PermissionId = typeof permissionCatalog[number]["id"];
+export type VesselRole = { id: string; name: string; description: string; permissions: PermissionId[]; system: boolean };
+const roleSeeds: VesselRole[] = [
+  { id: "administrator", name: "Administrator", description: "Full control-plane access.", permissions: ["*" as PermissionId], system: true },
+  { id: "operator", name: "Operator", description: "Manage Docker resources and deployments.", permissions: ["overview.view", "containers.view", "containers.manage", "containers.logs", "images.view", "images.manage", "volumes.view", "volumes.manage", "networks.view", "networks.manage", "projects.view", "projects.manage", "deployments.view", "deployments.manage", "monitoring.view"], system: true },
+  { id: "viewer", name: "Viewer", description: "Read Docker resources and project status.", permissions: ["overview.view", "containers.view", "images.view", "volumes.view", "networks.view", "projects.view", "deployments.view", "monitoring.view"], system: true },
+];
+
 export type OAuthConfiguration = Omit<PlatformSettings, "refreshIntervalSeconds" | "sessionLifetimeHours" | "passwordMinLength" | "passwordRequireStrong" | "oauthClientSecretConfigured"> & { oauthClientSecret: string };
 
 const defaultSettings: PlatformSettings = {
@@ -63,6 +83,12 @@ function db(): DatabaseSync {
       role TEXT NOT NULL DEFAULT 'operator', email TEXT, enabled INTEGER NOT NULL DEFAULT 1,
       auth_provider TEXT, auth_subject TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS vessel_roles (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      description TEXT NOT NULL DEFAULT '', permissions_json TEXT NOT NULL DEFAULT '[]',
+      is_system INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS vessel_sessions (
       token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL,
@@ -218,6 +244,10 @@ function db(): DatabaseSync {
       state_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`);
+    const saveRole = database.prepare(`INSERT INTO vessel_roles (id, name, description, permissions_json, is_system)
+      VALUES (?, ?, ?, ?, 1) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
+      permissions_json=excluded.permissions_json, is_system=1`);
+    for (const role of roleSeeds) saveRole.run(role.id, role.name, role.description, JSON.stringify(role.permissions));
     const userColumns = database.prepare("PRAGMA table_info(vessel_users)").all() as Array<{ name: string }>;
     if (!userColumns.some((column) => column.name === "email")) database.exec("ALTER TABLE vessel_users ADD COLUMN email TEXT");
     if (!userColumns.some((column) => column.name === "auth_provider")) database.exec("ALTER TABLE vessel_users ADD COLUMN auth_provider TEXT");
@@ -327,11 +357,20 @@ const dummyPasswordHash = `${dummyPasswordSalt}:${scryptSync("not-a-real-vessel-
 export function ensureInitialAdmin(): void {
   const count = (db().prepare("SELECT COUNT(*) AS count FROM vessel_users").get() as { count: number }).count;
   if (count > 0) return;
-  const password = process.env.VESSEL_ADMIN_PASSWORD;
+  // The fixed admin/admin credential is an explicit localhost-only bootstrap
+  // convenience. Never enable it on a host-bound listener or by default.
+  const localDefaultEnabled = process.env.VESSEL_ALLOW_DEFAULT_ADMIN === "true"
+    && (process.env.VESSEL_BIND_ADDRESS ?? "127.0.0.1") === "127.0.0.1";
+  const usingLocalDefault = localDefaultEnabled && !process.env.VESSEL_ADMIN_PASSWORD;
+  const password = process.env.VESSEL_ADMIN_PASSWORD ?? (usingLocalDefault ? "admin" : undefined);
   if (!password) return;
   const username = process.env.VESSEL_ADMIN_USERNAME ?? "admin";
   if (!/^[a-zA-Z0-9._-]{3,64}$/.test(username)) return;
-  try { validatePassword(password); } catch { return; }
+  if (usingLocalDefault) {
+    if (username !== "admin") return;
+  } else {
+    try { validatePassword(password); } catch { return; }
+  }
   db().prepare("INSERT INTO vessel_users (id, username, password_hash, role) VALUES (?, ?, ?, 'administrator')").run(randomUUID(), username, hashPassword(password));
 }
 
@@ -579,7 +618,64 @@ export function endSession(token: string): string | null {
   try { return decrypt(row.idToken); } catch { return null; }
 }
 
-export function currentUser(token: string | null): { id: string; username: string; role: string; email: string | null; avatarUrl: string | null } | null {
+function roleRecord(roleId: string): VesselRole {
+  const row = db().prepare("SELECT id, name, description, permissions_json AS permissionsJson, is_system AS system FROM vessel_roles WHERE id = ?").get(roleId) as { id: string; name: string; description: string; permissionsJson: string; system: number } | undefined;
+  if (!row) return roleSeeds.find((role) => role.id === "viewer")!;
+  let permissions: string[] = [];
+  try { permissions = JSON.parse(row.permissionsJson) as string[]; } catch { permissions = []; }
+  return { id: row.id, name: row.name, description: row.description, permissions: permissions as PermissionId[], system: Boolean(row.system) };
+}
+
+export function listRoles(): VesselRole[] {
+  const rows = db().prepare("SELECT id, name, description, permissions_json AS permissionsJson, is_system AS system FROM vessel_roles ORDER BY is_system DESC, name COLLATE NOCASE").all() as Array<{ id: string; name: string; description: string; permissionsJson: string; system: number }>;
+  return rows.map((row) => {
+    let permissions: string[] = [];
+    try { permissions = JSON.parse(row.permissionsJson) as string[]; } catch { /* invalid persisted data grants no permissions */ }
+    return { id: row.id, name: row.name, description: row.description, permissions: permissions as PermissionId[], system: Boolean(row.system) };
+  });
+}
+
+export function saveCustomRole(input: { id?: string; name: string; description?: string; permissions: string[] }): VesselRole {
+  const name = input.name.trim();
+  if (name.length < 2 || name.length > 48 || /[\u0000-\u001f]/.test(name)) throw new Error("Role name must contain 2–48 printable characters.");
+  const description = (input.description ?? "").trim();
+  if (description.length > 240) throw new Error("Role description must be 240 characters or fewer.");
+  const allowed = new Set<string>(permissionCatalog.map((permission) => permission.id));
+  const permissions = [...new Set(input.permissions)];
+  if (permissions.length > permissionCatalog.length || permissions.some((permission) => !allowed.has(permission))) throw new Error("Choose valid permissions.");
+  const id = input.id ?? randomUUID();
+  if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error("Invalid custom role id.");
+  const database = db();
+  const existing = database.prepare("SELECT is_system AS system FROM vessel_roles WHERE id = ?").get(id) as { system: number } | undefined;
+  if (existing?.system) throw new Error("Built-in roles cannot be changed.");
+  const duplicate = database.prepare("SELECT id FROM vessel_roles WHERE name = ? COLLATE NOCASE AND id <> ?").get(name, id);
+  if (duplicate) throw new Error("A role with this name already exists.");
+  database.prepare(`INSERT INTO vessel_roles (id, name, description, permissions_json, is_system)
+    VALUES (?, ?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
+    permissions_json=excluded.permissions_json, updated_at=CURRENT_TIMESTAMP WHERE vessel_roles.is_system=0`)
+    .run(id, name, description, JSON.stringify(permissions));
+  return listRoles().find((role) => role.id === id)!;
+}
+
+export function deleteCustomRole(id: string): void {
+  if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error("Invalid custom role id.");
+  const database = db();
+  const role = database.prepare("SELECT is_system AS system FROM vessel_roles WHERE id = ?").get(id) as { system: number } | undefined;
+  if (!role) throw new Error("Role not found.");
+  if (role.system) throw new Error("Built-in roles cannot be deleted.");
+  const assigned = Number((database.prepare("SELECT COUNT(*) AS count FROM vessel_users WHERE role = ?").get(id) as { count: number }).count);
+  if (assigned) throw new Error("Reassign users before deleting this role.");
+  database.prepare("DELETE FROM vessel_roles WHERE id = ?").run(id);
+}
+
+export function userHasPermission(user: { role: string } | null | undefined, permission: string): boolean {
+  if (!user) return false;
+  const role = roleRecord(user.role);
+  if (role.permissions.includes("*" as PermissionId) || role.permissions.includes(permission as PermissionId)) return true;
+  return permission.endsWith(".view") && role.permissions.includes(`${permission.slice(0, -5)}.manage` as PermissionId);
+}
+
+export function currentUser(token: string | null): { id: string; username: string; role: string; roleName: string; permissions: PermissionId[]; email: string | null; avatarUrl: string | null } | null {
   if (!token) return null;
   const tokenHash = createHash("sha256").update(token).digest("hex");
   let row = db().prepare("SELECT u.id, u.username, u.role, u.email FROM vessel_sessions s JOIN vessel_users u ON u.id = s.user_id WHERE s.token_hash = ? AND julianday(s.expires_at) > julianday('now') AND u.enabled = 1").get(tokenHash) as { id: string; username: string; role: string; email: string | null } | undefined;
@@ -592,7 +688,8 @@ export function currentUser(token: string | null): { id: string; username: strin
     row = apiToken;
   }
   const avatarHash = row.email ? createHash("sha256").update(row.email.trim().toLowerCase()).digest("hex") : null;
-  return { ...row, avatarUrl: avatarHash ? `https://gravatar.com/avatar/${avatarHash}?s=128&d=identicon` : null };
+  const assignedRole = roleRecord(row.role);
+  return { ...row, roleName: assignedRole.name, permissions: assignedRole.permissions, avatarUrl: avatarHash ? `https://gravatar.com/avatar/${avatarHash}?s=128&d=identicon` : null };
 }
 
 export function mutationUser(request: Request): { id: string; username: string; role: string } | null {
@@ -638,7 +735,8 @@ export function revokeUserApiToken(userId: string, id: string): boolean {
 export function listUsers() {
   return (db().prepare("SELECT id, username, email, role, enabled, created_at AS createdAt FROM vessel_users ORDER BY username").all() as Array<{ id: string; username: string; email: string | null; role: string; enabled: number; createdAt: string }>).map((user) => {
     const hash = user.email ? createHash("sha256").update(user.email.trim().toLowerCase()).digest("hex") : null;
-    return { ...user, avatarUrl: hash ? `https://gravatar.com/avatar/${hash}?s=128&d=identicon` : null };
+    const assignedRole = roleRecord(user.role);
+    return { ...user, roleName: assignedRole.name, avatarUrl: hash ? `https://gravatar.com/avatar/${hash}?s=128&d=identicon` : null };
   });
 }
 
@@ -653,7 +751,8 @@ export function createUser(username: string, password: string, role: string, ema
   validatePassword(password);
   const id = randomUUID();
   const normalizedEmail = normalizeEmail(email);
-  db().prepare("INSERT INTO vessel_users (id, username, password_hash, role, email) VALUES (?, ?, ?, ?, ?)").run(id, username, hashPassword(password), ["administrator", "operator", "viewer"].includes(role) ? role : "operator", normalizedEmail);
+  if (!db().prepare("SELECT 1 FROM vessel_roles WHERE id = ?").get(role)) throw new Error("Choose a valid user role.");
+  db().prepare("INSERT INTO vessel_users (id, username, password_hash, role, email) VALUES (?, ?, ?, ?, ?)").run(id, username, hashPassword(password), role, normalizedEmail);
   const hash = normalizedEmail ? createHash("sha256").update(normalizedEmail).digest("hex") : null;
   return { id, username, role, email: normalizedEmail, avatarUrl: hash ? `https://gravatar.com/avatar/${hash}?s=128&d=identicon` : null };
 }
@@ -668,7 +767,7 @@ export function updateManagedUser(input: { userId: string; actorId: string; user
   const username = input.username.trim();
   if (!/^[a-zA-Z0-9._-]{3,64}$/.test(username)) throw new Error("Username must be 3–64 letters, numbers, dots, dashes, or underscores.");
   const role = input.role;
-  if (!["administrator", "operator", "viewer"].includes(role)) throw new Error("Choose a valid user role.");
+  if (!db().prepare("SELECT 1 FROM vessel_roles WHERE id = ?").get(role)) throw new Error("Choose a valid user role.");
   const normalizedEmail = normalizeEmail(input.email);
   const password = input.password?.trim() ?? "";
   if (password) validatePassword(password);

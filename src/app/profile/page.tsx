@@ -92,6 +92,7 @@ export default function ProfilePage() {
 
   async function logout() {
     setBusy(true);
+    window.sessionStorage.removeItem("vessel-show-active-alerts-after-login");
     window.location.assign("/api/auth/logout");
   }
 

@@ -6,7 +6,7 @@ import type { DockerAction, DockerContainer } from "@/lib/docker/types";
 import { cloneDataResource, detectDataSource, updateDataResourceName, validDataResourceName } from "@/lib/data-copy";
 import { startCloneJob, startOperationJob } from "@/lib/jobs";
 import type { ContainerRuntimeSettings, RestartPolicy, ServiceCategory } from "@/lib/services";
-import { addVesselProjectService, authenticatedUser, maskVesselProjectEnvironmentReferences, mutationUser, resolveVesselProjectReferences, vesselProjectById, vesselProjectIdForResource } from "@/lib/control-plane";
+import { addVesselProjectService, authenticatedUser, maskVesselProjectEnvironmentReferences, mutationUser, resolveVesselProjectReferences, userHasPermission, vesselProjectById, vesselProjectIdForResource } from "@/lib/control-plane";
 
 type RestartPolicyInput = { name?: string; maxRetries?: number };
 type RuntimeSettingsInput = Partial<ContainerRuntimeSettings>;
@@ -213,6 +213,7 @@ async function applySelectedNetwork(containerId: string | null, networkId: strin
 export async function getServices(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
+  if (!userHasPermission(user, "containers.view")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   if (!isDockerConfigured()) {
     return NextResponse.json({ data: [], meta: { source: "vessel", dockerSync: "not-configured", discovered: 0, host: process.env.PUBLIC_SERVICE_HOST ?? "" } }, { status: 503 });
   }
@@ -275,10 +276,10 @@ export async function getServices(request: Request) {
         imageVersion: imageVersion(container.Image ?? null),
         networks: details[index] ? Object.keys(details[index].NetworkSettings?.Networks ?? {}) : discoveredNetworks?.names ?? [],
         detailsLoaded: !summaryOnly && Boolean(details[index]),
-        ...(user.role === "viewer" || !environmentVariables ? {} : { environmentVariables: linkedProjectId ? maskVesselProjectEnvironmentReferences(linkedProjectId, environmentVariables) : environmentVariables }),
+        ...(!userHasPermission(user, "containers.manage") || !environmentVariables ? {} : { environmentVariables: linkedProjectId ? maskVesselProjectEnvironmentReferences(linkedProjectId, environmentVariables) : environmentVariables }),
         ...(!summaryOnly && !details[index] ? { detailsUnavailable: true } : {}),
         restartPolicy: restartPolicyFor(details[index]),
-        ...(user.role === "viewer" ? {} : { runtimeSettings: details[index] ? runtimeSettingsFor(details[index]) : undefined }),
+        ...(!userHasPermission(user, "containers.manage") ? {} : { runtimeSettings: details[index] ? runtimeSettingsFor(details[index]) : undefined }),
         composeProject,
         composeService: container.Labels?.["com.docker.compose.service"] ?? null,
         createdAt: container.Created ?? null,
@@ -297,7 +298,7 @@ export async function getServices(request: Request) {
 export async function postServices(request: Request) {
   const user = mutationUser(request);
   if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  if (user.role === "viewer") return NextResponse.json({ error: "This account cannot manage Docker services" }, { status: 403 });
+  if (!userHasPermission(user, "containers.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   if (!isDockerConfigured()) {
     return NextResponse.json({ error: "El backend Docker no está configurado" }, { status: 503 });
   }

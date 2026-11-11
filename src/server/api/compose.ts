@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { NextResponse } from "next/server";
-import { addVesselProjectService, authenticatedUser, getVesselProjectEnvironment, mutationUser, vesselProjectById, vesselProjectIdForResource } from "@/lib/control-plane";
+import { addVesselProjectService, authenticatedUser, getVesselProjectEnvironment, mutationUser, userHasPermission, vesselProjectById, vesselProjectIdForResource } from "@/lib/control-plane";
 import { listDockerContainers } from "@/lib/docker/containers";
 import { dockerCliEnvironment, currentDockerEngineId } from "@/lib/docker/engine-context";
 
@@ -188,6 +188,7 @@ async function composeProjectDirectory(name: string): Promise<string> {
 export async function getCompose(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return privateJson({ error: "Authentication required" }, { status: 401 });
+  if (!userHasPermission(user, "compose.view")) return privateJson({ error: "Permission denied" }, { status: 403 });
   const name = new URL(request.url).searchParams.get("name");
   if (!name) {
     try {
@@ -213,7 +214,6 @@ export async function getCompose(request: Request) {
       return privateJson({ data: [], error: "Docker Compose projects could not be discovered" }, { status: 502 });
     }
   }
-  if (user.role !== "administrator") return privateJson({ error: "Administrator access required to read Compose configuration" }, { status: 403 });
   if (!validName(name)) return privateJson({ error: "Invalid project name" }, { status: 400 });
   let hostFile: string | null = null;
   try {
@@ -244,7 +244,7 @@ export async function getCompose(request: Request) {
 export async function postCompose(request: Request) {
   const user = mutationUser(request);
   if (!user) return privateJson({ error: "Authentication required" }, { status: 401 });
-  if (user.role !== "administrator") return privateJson({ error: "Administrator access required to manage Compose projects" }, { status: 403 });
+  if (!userHasPermission(user, "compose.manage")) return privateJson({ error: "Permission denied" }, { status: 403 });
   const body = await request.json().catch(() => null) as { name?: string; yaml?: string; env?: string; envEdited?: boolean; action?: "preview" | "validate" | "save" | "save_env" | "up" | "up_service" | "down"; service?: string; projectId?: string; projectServiceKind?: "compose" | "template" } | null;
   if (!body?.name || !body.yaml || !["preview", "validate", "save", "save_env", "up", "up_service", "down"].includes(body.action ?? "")) return privateJson({ error: "name, yaml and a valid action are required" }, { status: 400 });
   if (body.projectId && (!vesselProjectById(body.projectId) || !["compose", "template"].includes(body.projectServiceKind ?? ""))) return privateJson({ error: "The Vessel project or service type is invalid" }, { status: 400 });

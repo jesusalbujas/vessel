@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createRegistry, currentUser, deleteRegistry, listRegistries, registryCredentialsById, requestTokenFromRequest } from "@/lib/control-plane";
+import { createRegistry, currentUser, deleteRegistry, listRegistries, registryCredentialsById, requestTokenFromRequest, userHasPermission } from "@/lib/control-plane";
 import { isDockerConfigured } from "@/lib/docker/client";
 import { testDockerRegistryCredentials } from "@/lib/docker/registry-auth";
 import { prepareRegistry } from "@/lib/registries";
@@ -11,13 +11,14 @@ function auth(request: Request) {
 export async function getRegistries(request: Request) {
   const user = auth(request);
   if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  return NextResponse.json({ data: listRegistries(), canManage: user.role === "administrator" });
+  if (!userHasPermission(user, "registries.view")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
+  return NextResponse.json({ data: listRegistries(), canManage: userHasPermission(user, "registries.manage") });
 }
 
 export async function postRegistries(request: Request) {
   const user = auth(request);
   if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  if (user.role !== "administrator") return NextResponse.json({ error: "Administrator access required" }, { status: 403 });
+  if (!userHasPermission(user, "registries.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   let body: { action?: "test" | "test_saved" | "save"; id?: string; provider?: string; name?: string; url?: string; baseUrl?: string; region?: string; username?: string; password?: string };
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid request" }, { status: 400 }); }
 
@@ -46,7 +47,7 @@ export async function postRegistries(request: Request) {
 
 export async function deleteRegistries(request: Request) {
   const user = auth(request);
-  if (!user || user.role !== "administrator") return NextResponse.json({ error: "Administrator access required" }, { status: 403 });
+  if (!user || !userHasPermission(user, "registries.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   let body: { id?: string };
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid request" }, { status: 400 }); }
   if (!body.id) return NextResponse.json({ error: "Registry id is required" }, { status: 400 });

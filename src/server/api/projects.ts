@@ -21,6 +21,7 @@ import {
   removeVesselProjectService,
   setVesselProjectEnvironmentVariable,
   updateVesselProject,
+  userHasPermission,
   vesselProjectById,
   type VesselProjectServiceKind,
 } from "@/lib/control-plane";
@@ -39,6 +40,7 @@ const kinds = new Set<VesselProjectServiceKind>(["application", "database", "com
 export function getProjects(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return json({ error: "Authentication required" }, { status: 401 });
+  if (!userHasPermission(user, "projects.view")) return json({ error: "Permission denied" }, { status: 403 });
   const id = new URL(request.url).searchParams.get("id");
   if (!id) return json({ data: listVesselProjects(), tags: listVesselProjectTags() });
   const project = vesselProjectById(id);
@@ -125,7 +127,7 @@ export function getProjects(request: Request) {
 export async function postProjects(request: Request) {
   const user = mutationUser(request);
   if (!user) return json({ error: "Authentication required" }, { status: 401 });
-  if (user.role === "viewer") return json({ error: "This account cannot manage projects" }, { status: 403 });
+  if (!userHasPermission(user, "projects.manage")) return json({ error: "Permission denied" }, { status: 403 });
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.action !== "string") return json({ error: "Invalid request" }, { status: 400 });
   try {

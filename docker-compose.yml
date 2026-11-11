@@ -22,6 +22,8 @@ services:
       VESSEL_SECRET_KEY: ${VESSEL_SECRET_KEY:?Set a private random VESSEL_SECRET_KEY in .env (at least 32 characters)}
       VESSEL_ADMIN_USERNAME: ${VESSEL_ADMIN_USERNAME:-admin}
       VESSEL_ADMIN_PASSWORD: ${VESSEL_ADMIN_PASSWORD:-}
+      VESSEL_ALLOW_DEFAULT_ADMIN: ${VESSEL_ALLOW_DEFAULT_ADMIN:-false}
+      VESSEL_BIND_ADDRESS: ${VESSEL_BIND_ADDRESS:-127.0.0.1}
       VESSEL_COMPOSE_ROOT: /app/data/compose-projects
       VESSEL_GIT_ROOT: ${VESSEL_GIT_ROOT:-/opt/vessel-data/git-sources}
       VESSEL_COMPOSE_SOURCE_ROOT: /app/compose-host

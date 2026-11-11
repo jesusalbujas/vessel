@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authenticatedUser, mutationUser } from "@/lib/control-plane";
+import { authenticatedUser, mutationUser, userHasPermission } from "@/lib/control-plane";
 import { aiConfigurationWithKey, deleteAIConfiguration, deleteCustomAIProvider, listAIConfigurations, listCustomAIProviders, saveAIConfiguration, saveCustomAIProvider, setAIConfigurationEnabled } from "@/lib/ai-config";
 
 const presets: Record<string, { name: string; baseUrl: string }> = {
@@ -84,7 +84,7 @@ export async function getAISettings(request: Request) {
   if (new URL(request.url).searchParams.get("available") === "1") {
     return json({ configurations: listAIConfigurations().filter((item) => item.enabled).map(({ id, name, model, provider }) => ({ id, name, model, provider })) });
   }
-  if (user.role !== "administrator") return json({ error: "Administrator access required" }, 403);
+  if (!userHasPermission(user, "ai.manage")) return json({ error: "Permission denied" }, 403);
   return json({ configurations: listAIConfigurations(), customProviders: listCustomAIProviders(), presets: Object.entries(presets).map(([id, value]) => ({ id, ...value })) });
 }
 
@@ -93,7 +93,7 @@ export async function postAISettings(request: Request) {
   if (!user) return json({ error: "Authentication required" }, 401);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return json({ error: "Invalid request" }, 400);
-  if (body.action !== "analyze" && user.role !== "administrator") return json({ error: "Administrator access required" }, 403);
+  if (body.action !== "analyze" && !userHasPermission(user, "ai.manage")) return json({ error: "Permission denied" }, 403);
   try {
     if (body.action === "save_custom_provider") {
       if (!validText(body.name) || !validBaseUrl(body.baseUrl)) return json({ error: "Enter a provider name and a valid HTTP(S) API URL." }, 400);

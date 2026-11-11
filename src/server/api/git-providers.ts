@@ -7,6 +7,7 @@ import {
   listGitProviders,
   saveGitProvider,
   secretStorageReady,
+  userHasPermission,
   type GitProviderKind,
 } from "@/lib/control-plane";
 import { gitProviderBaseUrl } from "@/server/api/git-provider-url";
@@ -21,7 +22,7 @@ function privateJson(data: unknown, init?: ResponseInit) {
 function admin(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return { response: privateJson({ error: "Authentication required" }, { status: 401 }) };
-  if (user.role !== "administrator") return { response: privateJson({ error: "Administrator access required" }, { status: 403 }) };
+  if (!userHasPermission(user, "git.manage")) return { response: privateJson({ error: "Permission denied" }, { status: 403 }) };
   return { user };
 }
 

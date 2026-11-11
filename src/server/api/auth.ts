@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
-import { authenticate, createInitialAdmin, createSession, currentUser, getPlatformSettings, passwordPolicy, requestTokenFromRequest, revokeSession, sessionLifetimeSeconds, updateUserEmail, userCount } from "@/lib/control-plane";
+import { authenticate, createInitialAdmin, createSession, currentUser, ensureInitialAdmin, getPlatformSettings, passwordPolicy, requestTokenFromRequest, revokeSession, sessionLifetimeSeconds, updateUserEmail, userCount } from "@/lib/control-plane";
 import { clearLoginFailures, loginRetryAfterSeconds, recordLoginFailure } from "@/lib/login-rate-limit";
 
 const token = requestTokenFromRequest;
@@ -11,6 +11,7 @@ function privateJson(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, { ...init, headers });
 }
 export async function getAuth(request: Request) {
+  ensureInitialAdmin();
   const settings = getPlatformSettings();
   const setupRequired = userCount() === 0;
   return privateJson({

@@ -16,6 +16,7 @@ import {
   listGitSources,
   listVesselProjectServices,
   secretStorageReady,
+  userHasPermission,
   setGitSourceSecret,
   updateGitSource,
   vesselProjectById,
@@ -34,7 +35,14 @@ function privateJson(data: unknown, init?: ResponseInit) {
 function manager(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return { response: privateJson({ error: "Authentication required" }, { status: 401 }) };
-  if (user.role === "viewer") return { response: privateJson({ error: "This account cannot manage deployments" }, { status: 403 }) };
+  if (!userHasPermission(user, "deployments.manage")) return { response: privateJson({ error: "Permission denied" }, { status: 403 }) };
+  return { user };
+}
+
+function reader(request: Request) {
+  const user = authenticatedUser(request);
+  if (!user) return { response: privateJson({ error: "Authentication required" }, { status: 401 }) };
+  if (!userHasPermission(user, "deployments.view")) return { response: privateJson({ error: "Permission denied" }, { status: 403 }) };
   return { user };
 }
 
@@ -88,7 +96,7 @@ async function verifyRepository(providerId: string, repository: string, branch?:
 }
 
 export function getDeployments(request: Request) {
-  const auth = manager(request);
+  const auth = reader(request);
   if ("response" in auth) return auth.response;
   const role = auth.user.role;
   const deploymentId = new URL(request.url).searchParams.get("deploymentId");

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authenticatedUser, listVesselProjects } from "@/lib/control-plane";
+import { authenticatedUser, listVesselProjects, userHasPermission } from "@/lib/control-plane";
 import { currentDockerRequestSignal } from "@/lib/docker/engine-context";
 import { dockerApiBase, dockerHeaders } from "@/lib/docker/client";
 import { getDockerComposeVersion } from "@/lib/docker/engine";
@@ -43,7 +43,9 @@ function publicEngineInfo(engine: DockerEngineInfo, composeVersion: string | nul
 }
 
 export async function getOverview(request: Request) {
-  if (!authenticatedUser(request)) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  const user = authenticatedUser(request);
+  if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  if (!userHasPermission(user, "overview.view")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   try {
     const composeVersionPromise = getDockerComposeVersion();
     const response = await fetch(`${dockerApiBase()}/overview`, {

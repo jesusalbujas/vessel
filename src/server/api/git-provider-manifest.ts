@@ -9,6 +9,7 @@ import {
   gitProviderStateOwner,
   saveGitProvider,
   secretStorageReady,
+  userHasPermission,
 } from "@/lib/control-plane";
 import { verifyGitHubInstallation } from "@/lib/git-provider-clients";
 import { gitProviderBaseUrl, isSecureGitProviderUrl } from "@/server/api/git-provider-url";
@@ -18,7 +19,7 @@ const setupCookiePrefix = "vessel-git-state-";
 
 function admin(request: Request) {
   const user = authenticatedUser(request);
-  return user?.role === "administrator" ? user : null;
+  return user && userHasPermission(user, "git.manage") ? user : null;
 }
 
 function cookieValue(request: Request, name: string) {

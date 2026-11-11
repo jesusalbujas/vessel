@@ -1,6 +1,6 @@
 import { readFile, statfs } from "node:fs/promises";
 import { NextResponse } from "next/server";
-import { authenticatedUser } from "@/lib/control-plane";
+import { authenticatedUser, userHasPermission } from "@/lib/control-plane";
 import { dockerApiBase, dockerGet } from "@/lib/docker/client";
 import { listRemoteServers, remoteServerWithKey } from "@/lib/remote-servers";
 import { currentDockerEngineId } from "@/lib/docker/engine-context";
@@ -81,7 +81,9 @@ function memoryKilobytes(text: string, key: string) {
 }
 
 export async function getMetrics(request: Request) {
-  if (!authenticatedUser(request)) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  const user = authenticatedUser(request);
+  if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  if (!userHasPermission(user, "overview.view")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   const params = new URL(request.url).searchParams;
   const engineId = params.get("engineId") ?? currentDockerEngineId();
   const hostOnly = params.get("hostOnly") === "1";
@@ -118,10 +120,11 @@ export async function getMetrics(request: Request) {
     }
     const first = cpuTotals(await readFile("/proc/stat", "utf8"));
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const [stat, memoryText, disk, dockerDisk, io] = await Promise.all([
+    const [stat, memoryText, disk, uptimeText, dockerDisk, io] = await Promise.all([
       readFile("/proc/stat", "utf8"),
       readFile("/proc/meminfo", "utf8"),
       statfs(process.env.VESSEL_METRICS_PATH ?? "/app/data").catch(() => statfs(process.cwd())),
+      readFile("/proc/uptime", "utf8").catch(() => ""),
       hostOnly ? Promise.resolve({ value: null, error: null }) : optionalMetric(dockerStorageUsage),
       hostOnly ? Promise.resolve({ value: null, error: null }) : optionalMetric(dockerIoUsage),
     ]);
@@ -135,7 +138,9 @@ export async function getMetrics(request: Request) {
     return NextResponse.json({
       cpu: { percent: cpuPercent },
       memory: { used: Math.max(0, memoryTotal - memoryAvailable), total: memoryTotal },
-      disk: { used: diskUsed, total: diskTotal, source: "vessel-data-filesystem" },
+      disk: { used: diskUsed, total: diskTotal, source: "vessel-data-filesystem", type: "unknown" },
+      uptimeSeconds: Math.max(0, Number.parseFloat(uptimeText.split(/\s+/)[0] ?? "") || 0),
+      packageUpdates: { supported: false, available: 0, security: 0 },
       dockerDisk: dockerDisk.value,
       dockerDiskError: dockerDisk.error,
       io: io.value,

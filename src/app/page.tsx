@@ -5,7 +5,6 @@ import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type Poi
 import { Activity, ArrowDownToLine, ArrowRight, Boxes, CircleAlert, CircleCheck, CirclePause, CirclePlay, Container, Cpu, Database, FolderKanban, FolderOpen, HardDrive, Images, MemoryStick, Monitor, Network, RefreshCw, Server } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { OverviewLoadingSkeleton } from "@/app/components/LoadingSkeletons";
-import VesselSelect from "@/app/components/VesselSelect";
 
 type ContainerSummary = { name: string; status: string; composeProject: string | null };
 type ProjectSummary = { name: string; containers: string[] };
@@ -17,7 +16,7 @@ type DockerDiskMetrics = { images: number; containers: number; volumes: number; 
 type IoMetrics = { blockRead: number; blockWrite: number; networkIn: number; networkOut: number; containers: number; failedContainers: number };
 type RemoteServerSummary = { id: string; name: string; host: string };
 type RemoteMetric = { server: RemoteServerSummary; metrics: HostMetrics | null; error: boolean };
-type HostMetrics = { cpu: { percent: number }; memory: { used: number; total: number }; disk: { used: number; total: number; source: string }; dockerDisk: DockerDiskMetrics | null; dockerDiskError: string | null; io: IoMetrics | null; ioError: string | null; sampledAt: string; remoteServers?: RemoteServerSummary[]; server?: RemoteServerSummary };
+type HostMetrics = { cpu: { percent: number }; memory: { used: number; total: number }; disk: { used: number; total: number; source: string; type?: "mechanical" | "solid_state" | "mixed" | "unknown" }; uptimeSeconds?: number; packageUpdates?: { supported: boolean; available: number; security: number }; dockerDisk: DockerDiskMetrics | null; dockerDiskError: string | null; io: IoMetrics | null; ioError: string | null; sampledAt: string; remoteServers?: RemoteServerSummary[]; server?: RemoteServerSummary };
 type MetricSample = { value: number; at: number };
 type IoSample = IoMetrics & { at: number };
 type HistoryRange = "15m" | "1h" | "6h" | "24h";
@@ -28,6 +27,15 @@ const METRICS_HISTORY_MAX_SAMPLES = 1440;
 const HISTORY_RANGE_MS: Record<HistoryRange, number> = { "15m": 15 * 60_000, "1h": 60 * 60_000, "6h": 6 * 60 * 60_000, "24h": 24 * 60 * 60_000 };
 const percent = (used: number, total: number) => total > 0 ? Math.min(100, Math.max(0, 100 * used / total)) : 0;
 const formatSize = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+function formatUptime(seconds: number, es: boolean) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const totalHours = Math.floor(seconds / 3600);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (es) return days ? `${days} d ${hours} h` : totalHours ? `${totalHours} h ${minutes} min` : `${minutes} min`;
+  return days ? `${days} d ${hours} h` : totalHours ? `${totalHours} h ${minutes} min` : `${minutes} min`;
+}
 const formatIoSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -94,7 +102,7 @@ function Trend({ samples, label, es, range }: { samples: MetricSample[]; label: 
       {areaPath ? <path className="overview-trend-area" d={areaPath} /> : null}
       {linePath ? <path className="overview-trend-line" d={linePath} /> : null}
       {activePoint ? <><line className="overview-trend-cursor" x1={activePoint.x} x2={activePoint.x} y1={plotTop} y2={plotBottom} /><circle className="overview-trend-active-point" cx={activePoint.x} cy={activePoint.y} r="4" /></> : null}
-      {points.map((point, index) => <circle key={`${visible[index].at}-${index}`} className="overview-trend-point" cx={point.x} cy={point.y} r={index === activeIndex ? 3.3 : 1.7}><title>{`${visible[index].value.toFixed(1)}% · ${sampleAge(visible[index].at, es)}`}</title></circle>)}
+      {points.map((point, index) => <circle key={`${visible[index].at}-${index}`} className="overview-trend-point" cx={point.x} cy={point.y} r={index === activeIndex ? 3.3 : 1.7} data-tooltip={`${label}: ${visible[index].value.toFixed(1)}% · ${sampleAge(visible[index].at, es)}`} />)}
     </svg>
     <div className="overview-trend-axis"><span>{timeLabel(rangeStart)}</span><span>{visible.length ? (es ? `${visible.length} muestras` : `${visible.length} samples`) : (es ? "Sin historial" : "No history")}</span><span>{timeLabel(rangeEnd)}</span></div>
     <div className="overview-trend-stats"><span>{es ? "Promedio" : "Average"}<strong>{average == null ? "—" : `${average.toFixed(1)}%`}</strong></span><span>{es ? "Máximo" : "Peak"}<strong>{peak == null ? "—" : `${peak.toFixed(1)}%`}</strong></span></div>
@@ -151,8 +159,8 @@ function IoHistoryChart({ samples, firstKey, secondKey, firstLabel, secondLabel,
       {firstPoints.length > 1 ? <path className="overview-io-line overview-io-line-read" d={path(firstPoints)} /> : null}
       {secondPoints.length > 1 ? <path className="overview-io-line overview-io-line-write" d={path(secondPoints)} /> : null}
       {active && visible.length > 1 ? <line className="overview-trend-cursor" x1={firstPoints[activeIndex].x} x2={firstPoints[activeIndex].x} y1={plot.top} y2={plot.bottom} /> : null}
-      {firstPoints.map((point, index) => <circle key={`read-${visible[index].at}`} className="overview-io-point overview-io-point-read" cx={point.x} cy={point.y} r={index === activeIndex ? 3.4 : 2}><title>{`${firstLabel}: ${formatIoSize(Math.max(0, visible[index][firstKey] - firstBaseline))}`}</title></circle>)}
-      {secondPoints.map((point, index) => <circle key={`write-${visible[index].at}`} className="overview-io-point overview-io-point-write" cx={point.x} cy={point.y} r={index === activeIndex ? 3.4 : 2}><title>{`${secondLabel}: ${formatIoSize(Math.max(0, visible[index][secondKey] - secondBaseline))}`}</title></circle>)}
+      {firstPoints.map((point, index) => <circle key={`read-${visible[index].at}`} className="overview-io-point overview-io-point-read" cx={point.x} cy={point.y} r={index === activeIndex ? 3.4 : 2} data-tooltip={`${firstLabel}: ${formatIoSize(Math.max(0, visible[index][firstKey] - firstBaseline))} · ${sampleAge(visible[index].at, es)}`} />)}
+      {secondPoints.map((point, index) => <circle key={`write-${visible[index].at}`} className="overview-io-point overview-io-point-write" cx={point.x} cy={point.y} r={index === activeIndex ? 3.4 : 2} data-tooltip={`${secondLabel}: ${formatIoSize(Math.max(0, visible[index][secondKey] - secondBaseline))} · ${sampleAge(visible[index].at, es)}`} />)}
     </svg>
     <div className="overview-io-legend"><span><i className="io-color-read" />{firstLabel}</span><span><i className="io-color-write" />{secondLabel}</span><small>{visible.length ? `${visible.length} ${es ? "muestras" : "samples"}` : es ? "Sin historial" : "No history"}</small></div>
   </div>;
@@ -241,12 +249,6 @@ export default function OverviewPage() {
     window.addEventListener("vessel-engine-changed", handleEngineChange);
     return () => window.removeEventListener("vessel-engine-changed", handleEngineChange);
   }, []);
-
-  function selectEngine(engineId: string) {
-    if (engineId === selectedEngineId) return;
-    document.cookie = `vessel-engine-id=${encodeURIComponent(engineId)}; Path=/; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
-    window.dispatchEvent(new CustomEvent("vessel-engine-changed", { detail: engineId }));
-  }
 
   async function checkDockerUpdate(force = false) {
     const startedAt = performance.now();
@@ -495,11 +497,13 @@ export default function OverviewPage() {
     { key: "resources", icon: <><Cpu size={17} /><MemoryStick size={17} /></>, label: es ? "CPU / memoria del Engine" : "Engine CPU / memory", value: snapshot?.engine ? `${snapshot.engine.NCPU ?? "—"} ${es ? "núcleos" : "cores"} · ${snapshot.engine.MemTotal ? formatSize(snapshot.engine.MemTotal) : "—"}` : "—" },
     { key: "storage-driver", icon: <HardDrive size={14} />, label: es ? "Driver de almacenamiento" : "Storage driver", value: snapshot?.engine?.Driver ?? "—" },
     { key: "docker-root", icon: <FolderOpen size={14} />, label: es ? "Directorio Docker" : "Docker root directory", value: snapshot?.engine?.DockerRootDir ?? "—", title: snapshot?.engine?.DockerRootDir },
+    { key: "disk-type", icon: <HardDrive size={14} />, label: es ? "Tipo de disco" : "Disk type", value: metricsLoading ? (es ? "Consultando…" : "Checking…") : metrics?.disk.type === "mechanical" ? (es ? "Mecánico (HDD)" : "Mechanical (HDD)") : metrics?.disk.type === "solid_state" ? (es ? "Sólido / no rotacional (SSD/NVMe o virtual)" : "Solid-state / non-rotational (SSD/NVMe or virtual)") : metrics?.disk.type === "mixed" ? (es ? "Mixto" : "Mixed") : es ? "No identificado" : "Not identified", title: es ? "Docker no expone este dato. En servidores remotos se estima con el indicador ROTA del dispositivo que contiene el directorio Docker; algunos hipervisores no revelan el tipo físico." : "Docker does not expose this value. On remote servers it is inferred from the ROTA flag of the device holding Docker's data directory; some hypervisors do not reveal physical media type." },
+    { key: "uptime", icon: <Activity size={14} />, label: es ? "Tiempo activo del host" : "Host uptime", value: metricsLoading ? (es ? "Consultando…" : "Checking…") : metrics ? formatUptime(metrics.uptimeSeconds ?? 0, es) : "—", title: es ? "Tiempo desde el último arranque del sistema operativo del host." : "Time since the host operating system last booted." },
+    { key: "package-updates", icon: <ArrowDownToLine size={14} />, label: es ? "Actualizaciones de paquetes" : "Package updates", value: metricsLoading ? (es ? "Consultando…" : "Checking…") : metrics?.packageUpdates?.supported ? (es ? `${metrics.packageUpdates.available} disponibles · ${metrics.packageUpdates.security} de seguridad` : `${metrics.packageUpdates.available} available · ${metrics.packageUpdates.security} security`) : es ? "No disponible desde Vessel" : "Unavailable from Vessel", title: metrics?.packageUpdates?.supported ? (es ? "Revisión de actualizaciones apt usando los índices ya descargados en el servidor; Vessel no instala paquetes ni ejecuta una actualización del sistema." : "Checks apt updates using package indexes already downloaded on the server; Vessel does not install packages or run a system upgrade.") : (es ? "El Engine local se administra desde un contenedor y Vessel no tiene acceso al gestor de paquetes del host. En servidores remotos se consultan actualizaciones apt sin instalar nada." : "The local Engine is managed from a container, and Vessel cannot access the host package manager. Remote servers are checked for apt updates without installing anything.") },
   ];
 
   return <main className="module-main overview-page">
     <div className="overview-heading"><div><span className="overview-eyebrow">VESSEL / {es ? "RESUMEN" : "OVERVIEW"}</span><h1>{es ? "Tu espacio de trabajo" : "Your workspace"}</h1><p>{es ? "Una vista clara del estado de Docker. Entra a un proyecto o recurso cuando necesites manejarlo." : "A clear view of Docker health. Open a project or resource when you need to manage it."}</p></div><button className="overview-refresh" type="button" disabled={loading} onClick={() => setRefreshIndex((value) => value + 1)}><RefreshCw size={16} className={loading ? "spinning" : ""} />{es ? "Actualizar" : "Refresh"}</button></div>
-    <div className="overview-engine-select"><Server size={17} /><strong>Engine</strong><VesselSelect aria-label={es ? "Engine Docker activo" : "Active Docker Engine"} value={selectedEngineId} onChange={(event) => selectEngine(event.target.value)}><option value="local" data-status={engineAvailability.local} data-status-label={es ? "Sin conexión" : "Unavailable"}>{localEngineName}</option>{remoteServers.map((server) => <option key={server.id} value={server.id} data-status={engineAvailability[server.id]} data-status-label={es ? "Sin conexión" : "Unavailable"}>{server.name} · {server.host}</option>)}</VesselSelect></div>
     {error ? <div className="overview-error" role="alert"><Server size={22} /><div><strong>{selectedRemoteServer ? (es ? `No se pudo conectar a ${selectedRemoteServer.name}` : `Could not connect to ${selectedRemoteServer.name}`) : es ? "Docker no está disponible" : "Docker is unavailable"}</strong><p>{engineError ?? (selectedRemoteServer ? (es ? `No se pudo leer el estado de Docker en ${selectedRemoteServer.host}. Verifica la conexión SSH y que el usuario tenga acceso al socket Docker.` : `Could not read Docker state from ${selectedRemoteServer.host}. Check SSH connectivity and the user's access to the Docker socket.`) : es ? "No se pudo leer el estado de los contenedores. Revisa la conexión del backend y vuelve a intentar." : "Could not read container state. Check the backend connection and try again.")}</p></div></div> : null}
     {initialLoading ? <OverviewLoadingSkeleton variant="status" label={es ? "Cargando estado de Docker" : "Loading Docker status"} /> : error ? null : <section className="overview-status" aria-label={es ? "Estado del entorno" : "Environment status"}>
       <div className="overview-status-head"><span className="overview-status-icon"><Server size={20} /></span><div><strong>Docker Engine{snapshot?.engine?.ServerVersion ? ` · ${snapshot.engine.ServerVersion}` : ""}</strong><span>{snapshot?.engine?.Name || snapshot?.host ? `Host · ${snapshot.engine?.Name || snapshot.host}` : selectedRemoteServer ? `Host · ${selectedRemoteServer.host}` : es ? "Host local" : "Local host"}</span></div><span className={`overview-health ${error ? "is-error" : ""}`}><i />{error ? (es ? "Sin conexión" : "Disconnected") : (es ? "Conectado" : "Connected")}</span></div>

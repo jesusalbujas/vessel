@@ -3,7 +3,7 @@ import VesselSelect from "@/app/components/VesselSelect";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, CircleAlert, CircleCheck, Copy, Download, Fingerprint, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Server, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, CircleCheck, Fingerprint, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Server, ShieldCheck, Trash2, X } from "lucide-react";
 import { notifyVessel } from "@/app/components/ToastNotice";
 import { useI18n } from "@/lib/i18n";
 
@@ -12,10 +12,6 @@ type EngineInfo = { name: string; serverVersion: string; operatingSystem: string
 type ServerForm = { name: string; host: string; port: string; username: string; privateKey: string; sshKeyId: string; fingerprint: string; knownHost: string };
 type SSHKey = { id: string; name: string; keyType: string; publicKey: string };
 const emptyForm: ServerForm = { name: "", host: "", port: "22", username: "", privateKey: "", sshKeyId: "", fingerprint: "", knownHost: "" };
-
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 function localizedServerError(message: string, es: boolean) {
   const translations: Record<string, { es: string; en: string }> = {
@@ -47,51 +43,6 @@ export default function ServersPage() {
   const [editingLocalEngineName, setEditingLocalEngineName] = useState(false);
   const [savingLocalEngineName, setSavingLocalEngineName] = useState(false);
   const [canManage, setCanManage] = useState(false);
-  const selectedSSHKey = sshKeys.find((key) => key.id === form.sshKeyId);
-
-  const remoteSetupScript = selectedSSHKey && form.username.trim() ? [
-    "#!/usr/bin/env bash",
-    "set -eu",
-    `REMOTE_USER=${shellQuote(form.username.trim())}`,
-    `SSH_PUBLIC_KEY=${shellQuote(selectedSSHKey.publicKey)}`,
-    'if ! id "$REMOTE_USER" >/dev/null 2>&1; then sudo useradd --create-home --shell /bin/bash "$REMOTE_USER"; fi',
-    'REMOTE_HOME="$(getent passwd "$REMOTE_USER" | cut -d: -f6)"',
-    'REMOTE_GROUP="$(id -gn "$REMOTE_USER")"',
-    `if [ -z "$REMOTE_HOME" ] || ! getent group docker >/dev/null; then echo ${shellQuote(es ? "No se encontró el usuario o el grupo docker; revisa los requisitos." : "User or Docker group not found; check the prerequisites.")} >&2; exit 1; fi`,
-    `command -v docker >/dev/null || { echo ${shellQuote(es ? "Docker CLI no está instalado." : "Docker CLI is not installed.")} >&2; exit 1; }`,
-    `sudo docker info >/dev/null || { echo ${shellQuote(es ? "Esta cuenta administrativa no tiene acceso al Engine Docker." : "This administrator account cannot access the Docker Engine.")} >&2; exit 1; }`,
-    'sudo install -d -m 700 -o "$REMOTE_USER" -g "$REMOTE_GROUP" "$REMOTE_HOME/.ssh"',
-    'AUTH_KEYS="$REMOTE_HOME/.ssh/authorized_keys"',
-    'if ! sudo grep -qxF "$SSH_PUBLIC_KEY" "$AUTH_KEYS" 2>/dev/null; then printf "%s\\n" "$SSH_PUBLIC_KEY" | sudo tee -a "$AUTH_KEYS" >/dev/null; fi',
-    'sudo chown "$REMOTE_USER:$REMOTE_GROUP" "$AUTH_KEYS"',
-    'sudo chmod 600 "$AUTH_KEYS"',
-    'sudo usermod -aG docker "$REMOTE_USER"',
-    `sudo -u "$REMOTE_USER" docker info >/dev/null && echo ${shellQuote(es ? "El acceso SSH y Docker para Vessel está listo." : "Vessel SSH and Docker access is ready.")}`,
-  ].join("\n") : "";
-  const remoteFingerprintCommand = "for key in /etc/ssh/ssh_host_*_key.pub; do [ -r \"$key\" ] && ssh-keygen -lf \"$key\" -E sha256; done";
-
-  async function copyCommand(value: string, title: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      notifyVessel({ kind: "success", title });
-    } catch {
-      notifyVessel({ kind: "error", title: es ? "No se pudo copiar el comando" : "Could not copy command" });
-    }
-  }
-
-  function downloadSetupScript() {
-    if (!remoteSetupScript) return;
-    const blob = new Blob([remoteSetupScript, "\n"], { type: "text/x-shellscript;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    const safeName = (form.name.trim() || form.host.trim() || "vessel-server").replace(/[^a-zA-Z0-9_.-]+/g, "-");
-    anchor.href = url;
-    anchor.download = `vessel-setup-${safeName}.sh`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    notifyVessel({ kind: "success", title: es ? "Script descargado" : "Setup script downloaded" });
-  }
-
   async function load() {
     setLoading(true);
     try {
@@ -201,20 +152,9 @@ export default function ServersPage() {
         <label>{es ? "Puerto SSH" : "SSH port"}<input type="number" min={1} max={65535} value={form.port} onChange={(event) => setForm({ ...form, port: event.target.value })} /></label>
         <label>{es ? "Usuario SSH" : "SSH user"}<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="deploy" autoCapitalize="off" spellCheck={false} /></label>
       </div>
-      <div className="remote-fingerprint-row"><label><span><Fingerprint size={15} />{es ? "Huella de clave del host SSH" : "SSH host key fingerprint"}</span><input value={form.fingerprint} onChange={(event) => setForm({ ...form, fingerprint: event.target.value, knownHost: "" })} placeholder="SHA256:…" autoCapitalize="off" spellCheck={false} /></label><button className="secondary-button" type="button" onClick={() => void getFingerprint()} disabled={fingerprinting || !form.host.trim() || !form.port}>{fingerprinting ? <LoaderCircle size={15} className="spinning" /> : <Fingerprint size={15} />}{es ? "Consultar huella" : "Get fingerprint"}</button></div>
+      <div className="remote-fingerprint-row"><label><span><Fingerprint size={15} />{es ? "Huella de clave del host SSH" : "SSH host key fingerprint"}</span><input value={form.fingerprint} onChange={(event) => setForm({ ...form, fingerprint: event.target.value, knownHost: "" })} placeholder="SHA256:…" autoCapitalize="off" spellCheck={false} /></label><button className="secondary-button" type="button" onClick={() => void getFingerprint()} disabled={fingerprinting || !form.host.trim() || !form.port}>{fingerprinting ? <LoaderCircle size={15} className="spinning" /> : <Fingerprint size={15} />}{es ? "Obtener huella" : "Get fingerprint"}</button></div>
       {form.knownHost ? <div className="remote-trust-note"><ShieldCheck size={17} /><span>{es ? "Compara esta huella con la clave del servidor obtenida por un canal confiable antes de continuar:" : "Compare this fingerprint with the server key obtained through a trusted channel before continuing:"} <code>{form.fingerprint}</code><small>{es ? "En el servidor: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 (compara con la huella obtenida)." : "On the server: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 (compare it with the fingerprint above)."}</small></span></div> : null}
       {sshKeys.length ? <label className="remote-private-key"><span><KeyRound size={15} />{es ? "Clave SSH" : "SSH key"}</span><VesselSelect value={form.sshKeyId} onChange={(event) => setForm({ ...form, sshKeyId: event.target.value, privateKey: "" })}><option value="">{es ? "Selecciona una clave guardada…" : "Select a saved key…"}</option>{sshKeys.map((key) => <option key={key.id} value={key.id}>{key.name} · {key.keyType}</option>)}</VesselSelect></label> : <div className="remote-trust-note"><KeyRound size={16} /><span>{es ? "Primero agrega o genera una clave desde" : "Add or generate a key first in"} <Link href="/ssh-keys">{es ? "Claves SSH" : "SSH Keys"}</Link>.</span></div>}
-      <section className="remote-command-assistant" aria-labelledby="remote-command-title">
-        <div className="remote-command-assistant-heading"><span className="remote-engine-icon"><KeyRound size={19} /></span><div><h3 id="remote-command-title">{es ? "Ayuda para registrar este servidor" : "Commands to register this server"}</h3><p>{es ? "Genera los comandos con los datos ingresados. Copia cada bloque y ejecútalo en la terminal indicada." : "Generate commands from the values above. Copy each block and run it in the indicated terminal."}</p></div><Link className="secondary-button" href="/ssh-keys"><KeyRound size={14} />{es ? "Generar clave SSH" : "Generate SSH key"}</Link></div>
-        <div className="remote-command-steps">
-          <article className="remote-command-step"><div className="remote-command-step-title"><span>1</span><div><strong>{es ? "Preparar acceso en el servidor remoto" : "Prepare access on the remote server"}</strong><small>{es ? `Ejecuta como una cuenta administrativa con sudo · destino: ${form.username.trim() || "usuario SSH"}@${form.host.trim() || "host"}` : `Run as an administrator with sudo · target: ${form.username.trim() || "SSH user"}@${form.host.trim() || "host"}`}</small></div></div>
-            {remoteSetupScript ? <div className="remote-setup-command"><div><strong>{es ? "Script generado" : "Generated script"}</strong><div className="remote-command-actions"><button className="secondary-button" type="button" onClick={() => void copyCommand(remoteSetupScript, es ? "Comandos copiados" : "Commands copied")}><Copy size={14} />{es ? "Copiar" : "Copy"}</button><button className="secondary-button" type="button" onClick={downloadSetupScript}><Download size={14} />{es ? "Descargar .sh" : "Download .sh"}</button></div></div><pre><code>{remoteSetupScript}</code></pre></div> : <p className="remote-setup-key-hint"><KeyRound size={15} />{es ? "Completa el usuario SSH y selecciona una clave guardada para generar este bloque." : "Enter the SSH user and select a saved key to generate this block."}</p>}
-          </article>
-          <article className="remote-command-step"><div className="remote-command-step-title"><span>2</span><div><strong>{es ? "Comprobar la huella del servidor" : "Check the server fingerprint"}</strong><small>{es ? "En la terminal remota, compara el resultado con la huella consultada desde Vessel." : "In the remote terminal, compare the result with the fingerprint retrieved by Vessel."}</small></div></div><div className="remote-fingerprint-command"><code>{remoteFingerprintCommand}</code><button className="secondary-button" type="button" onClick={() => void copyCommand(remoteFingerprintCommand, es ? "Comando de huella copiado" : "Fingerprint command copied")}><Copy size={14} />{es ? "Copiar" : "Copy"}</button></div></article>
-          <article className="remote-command-step"><div className="remote-command-step-title"><span>3</span><div><strong>{es ? "Terminar el registro en Vessel" : "Finish registration in Vessel"}</strong><small>{es ? "Pulsa «Consultar huella», compara ambos valores por un canal confiable y luego «Verificar y guardar»." : "Select “Get fingerprint,” compare both values through a trusted channel, then choose “Verify and save.”"}</small></div></div></article>
-        </div>
-        <p className="remote-setup-warning"><ShieldCheck size={15} />{es ? "El script no se ejecuta automáticamente. Añadir un usuario al grupo docker concede control equivalente a root sobre el host; úsalo solo con una cuenta de confianza." : "The script does not run automatically. Adding a user to the docker group grants root-equivalent control of the host; use a trusted account only."}</p>
-      </section>
       <p className="remote-ssh-hint">{es ? "El usuario SSH debe poder acceder al socket Docker remoto. Vessel no abre el puerto TCP de Docker." : "The SSH user must be able to access the remote Docker socket. Vessel does not expose Docker's TCP port."}</p>
       {error ? <div className="remote-server-error" role="alert"><CircleAlert size={16} />{error}</div> : null}
       <div className="remote-form-actions"><button className="secondary-button" type="button" onClick={() => { setFormOpen(false); setForm(emptyForm); setError(""); }} disabled={saving}>{es ? "Cancelar" : "Cancel"}</button><button className="primary-button" type="button" onClick={() => void connect()} disabled={saving || !form.name.trim() || !form.host.trim() || !form.username.trim() || (!form.privateKey.trim() && !form.sshKeyId) || !form.fingerprint || !form.knownHost}>{saving ? <LoaderCircle size={16} className="spinning" /> : <ShieldCheck size={16} />}{saving ? (es ? "Verificando SSH y Docker…" : "Verifying SSH and Docker…") : (es ? "Verificar y guardar" : "Verify and save")}</button></div>

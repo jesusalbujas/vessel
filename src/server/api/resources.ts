@@ -6,12 +6,15 @@ import { deleteDockerImage, listDockerImages, pullDockerImage } from "@/lib/dock
 import { connectDockerContainer, disconnectDockerContainer, listDockerNetworks } from "@/lib/docker/networks";
 import { createDockerVolume, deleteDockerVolume, listDockerVolumes } from "@/lib/docker/volumes";
 import { startOperationJob } from "@/lib/jobs";
-import { authenticatedUser, mutationUser } from "@/lib/control-plane";
+import { authenticatedUser, mutationUser, userHasPermission } from "@/lib/control-plane";
 
 export async function getResources(request: Request) {
-  if (!authenticatedUser(request)) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  if (!isDockerConfigured()) return NextResponse.json({ error: "El backend Docker no está configurado" }, { status: 503 });
+  const user = authenticatedUser(request);
+  if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   const type = new URL(request.url).searchParams.get("type");
+  const readPermission = type === "images" ? "images.view" : type === "volumes" ? "volumes.view" : type === "networks" ? "networks.view" : "overview.view";
+  if (!userHasPermission(user, readPermission)) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
+  if (!isDockerConfigured()) return NextResponse.json({ error: "El backend Docker no está configurado" }, { status: 503 });
   try {
     if (type === "engine") {
       const [info, composeVersion] = await Promise.all([getDockerEngineInfo(), getDockerComposeVersion()]);
@@ -49,7 +52,7 @@ export async function postResources(request: Request) {
     return NextResponse.json({ error: "Solicitud inválida" }, { status: 400 });
   }
   if (body.action === "create_volume") {
-    if (user.role === "viewer") return NextResponse.json({ error: "Esta cuenta no puede crear volúmenes" }, { status: 403 });
+    if (!userHasPermission(user, "volumes.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
     const name = body.volumeName?.trim() ?? "";
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(name)) return NextResponse.json({ error: "Nombre de volumen inválido" }, { status: 400 });
     try {
@@ -59,6 +62,7 @@ export async function postResources(request: Request) {
     } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudo crear el volumen" }, { status: 502 }); }
   }
   if (body.action === "pull") {
+    if (!userHasPermission(user, "images.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
     const image = body.image?.trim() ?? "";
     if (!image || /\s/.test(image) || image.length > 512) return NextResponse.json({ error: "Indica una imagen Docker válida" }, { status: 400 });
     const job = startOperationJob("image", async (update) => {
@@ -69,6 +73,7 @@ export async function postResources(request: Request) {
     return NextResponse.json({ ok: true, action: "pull", jobId: job.id, image }, { status: 202 });
   }
   if (!body.action || !body.networkId || !body.containerId) return NextResponse.json({ error: "action, networkId y containerId son obligatorios" }, { status: 400 });
+  if (!userHasPermission(user, "networks.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   try {
     if (body.action === "connect") await connectDockerContainer(body.networkId, body.containerId);
     else await disconnectDockerContainer(body.networkId, body.containerId);
@@ -89,7 +94,7 @@ export async function deleteResources(request: Request) {
     return NextResponse.json({ error: "Solicitud inválida" }, { status: 400 });
   }
   if (body.volumeName !== undefined) {
-    if (user.role === "viewer") return NextResponse.json({ error: "Esta cuenta no puede borrar volúmenes" }, { status: 403 });
+    if (!userHasPermission(user, "volumes.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
     const name = body.volumeName;
     if (typeof name !== "string" || !name || name.length > 255 || /[\x00-\x1f/]/.test(name)) return NextResponse.json({ error: "Nombre de volumen inválido" }, { status: 400 });
     try {
@@ -105,6 +110,7 @@ export async function deleteResources(request: Request) {
     }
   }
   const imageIds = [...new Set((body.imageIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0))];
+  if (!userHasPermission(user, "images.manage")) return NextResponse.json({ error: "Permission denied" }, { status: 403 });
   if (!imageIds.length) return NextResponse.json({ error: "No se seleccionaron imágenes" }, { status: 400 });
   if (imageIds.length > 1000) return NextResponse.json({ error: "Puedes borrar hasta 1000 imágenes por operación" }, { status: 400 });
   const stream = new ReadableStream<Uint8Array>({

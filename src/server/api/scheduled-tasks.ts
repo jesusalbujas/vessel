@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authenticatedUser } from "@/lib/control-plane";
+import { authenticatedUser, userHasPermission } from "@/lib/control-plane";
 import {
   deleteScheduledJobProject,
   deleteScheduledJobGlobalKey,
@@ -34,14 +34,14 @@ function response(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: { "Cache-Control": "private, no-store", Vary: "Cookie, Authorization" } });
 }
 
-function administrator(request: Request) {
+function authorized(request: Request, permission: "automation.view" | "automation.manage") {
   const user = authenticatedUser(request);
-  return user?.role === "administrator" ? user : null;
+  return user && userHasPermission(user, permission) ? user : null;
 }
 
 
 export async function getScheduledTasks(request: Request) {
-  if (!administrator(request)) return response({ error: "Administrator access required" }, 403);
+  if (!authorized(request, "automation.view")) return response({ error: "Permission denied" }, 403);
   const url = new URL(request.url);
   const taskId = url.searchParams.get("taskId");
   const runId = url.searchParams.get("runId");
@@ -108,8 +108,8 @@ export async function getScheduledTasks(request: Request) {
 }
 
 export async function postScheduledTasks(request: Request) {
-  const user = administrator(request);
-  if (!user) return response({ error: "Administrator access required" }, 403);
+  const user = authorized(request, "automation.manage");
+  if (!user) return response({ error: "Permission denied" }, 403);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.action !== "string") return response({ error: "A valid task action is required" }, 400);
   try {

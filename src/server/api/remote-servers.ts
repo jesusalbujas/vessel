@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authenticatedUser, mutationUser } from "@/lib/control-plane";
+import { authenticatedUser, mutationUser, userHasPermission } from "@/lib/control-plane";
 import { dockerApiBase } from "@/lib/docker/client";
 import { deleteRemoteServer, listRemoteServers, markRemoteServerTested, remoteServerWithKey, saveRemoteServer } from "@/lib/remote-servers";
 import { getSSHKeyPrivate } from "@/lib/ssh-keys";
@@ -39,20 +39,21 @@ function validInput(input: RemoteInput, privateKey: string): input is RemoteInpu
 export async function getRemoteServers(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return response({ error: "Authentication required" }, { status: 401 });
-  if (user.role !== "administrator") return response({ error: "Administrator access required" }, { status: 403 });
+  if (!userHasPermission(user, "servers.view") && !userHasPermission(user, "servers.manage")) return response({ error: "Permission denied" }, { status: 403 });
   return response({ data: listRemoteServers() });
 }
 
 export function getRemoteEngineChoices(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return response({ error: "Authentication required" }, { status: 401 });
-  return response({ data: listRemoteServers().map(({ id, name, host }) => ({ id, name, host })), localEngineName: getLocalEngineName(), canManage: user.role === "administrator" });
+  if (!userHasPermission(user, "servers.view")) return response({ error: "Permission denied" }, { status: 403 });
+  return response({ data: listRemoteServers().map(({ id, name, host }) => ({ id, name, host })), localEngineName: getLocalEngineName(), canManage: userHasPermission(user, "servers.manage") });
 }
 
 export async function patchRemoteEngineChoices(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return response({ error: "Authentication required" }, { status: 401 });
-  if (user.role !== "administrator") return response({ error: "Administrator access required" }, { status: 403 });
+  if (!userHasPermission(user, "servers.manage")) return response({ error: "Permission denied" }, { status: 403 });
   const body = await request.json().catch(() => null) as { localEngineName?: unknown } | null;
   if (!body || typeof body.localEngineName !== "string") return response({ error: "localEngineName is required" }, { status: 400 });
   try {
@@ -65,7 +66,7 @@ export async function patchRemoteEngineChoices(request: Request) {
 export async function postRemoteServers(request: Request) {
   const user = mutationUser(request);
   if (!user) return response({ error: "Authentication required" }, { status: 401 });
-  if (user.role !== "administrator") return response({ error: "Administrator access required" }, { status: 403 });
+  if (!userHasPermission(user, "servers.manage")) return response({ error: "Permission denied" }, { status: 403 });
   if (Number(request.headers.get("content-length") ?? 0) > 80_000) return response({ error: "Request too large" }, { status: 413 });
   const body = await request.json().catch(() => null) as ({ action?: string } & RemoteInput) | null;
   if (!body) return response({ error: "Invalid request" }, { status: 400 });
@@ -109,7 +110,7 @@ export async function postRemoteServers(request: Request) {
 export async function deleteRemoteServers(request: Request) {
   const user = mutationUser(request);
   if (!user) return response({ error: "Authentication required" }, { status: 401 });
-  if (user.role !== "administrator") return response({ error: "Administrator access required" }, { status: 403 });
+  if (!userHasPermission(user, "servers.manage")) return response({ error: "Permission denied" }, { status: 403 });
   const id = new URL(request.url).searchParams.get("id") ?? "";
   if (!/^[a-f0-9-]{36}$/i.test(id)) return response({ error: "ID de servidor inválido" }, { status: 400 });
   try {

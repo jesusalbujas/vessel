@@ -37,22 +37,40 @@ function compareVersions(current: string, latest: string) {
 async function latestStableRelease(force: boolean) {
   const now = Date.now();
   if (cachedRelease && now - cachedRelease.fetchedAt < RELEASE_CACHE_MS && (!force || now - cachedRelease.fetchedAt < MIN_FORCED_REFRESH_MS)) return cachedRelease;
-  const response = await fetch("https://api.github.com/repos/moby/moby/releases/latest", {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "Vessel-Docker-Update-Check" },
-    cache: "no-store",
-    signal: AbortSignal.timeout(6000),
-  });
-  if (!response.ok) throw new Error(`Docker release source returned ${response.status}`);
-  const release = await response.json() as { tag_name?: unknown; html_url?: unknown; published_at?: unknown; draft?: unknown; prerelease?: unknown };
-  if (release.draft || release.prerelease || typeof release.tag_name !== "string") throw new Error("No stable Docker Engine release was found");
-  const version = release.tag_name.replace(/^docker-v/i, "").replace(/^v/i, "");
-  if (!versionParts(version)) throw new Error("Docker release version could not be parsed");
-  const result = {
-    version,
-    url: typeof release.html_url === "string" ? release.html_url : "https://docs.docker.com/engine/release-notes/",
-    publishedAt: typeof release.published_at === "string" ? release.published_at : null,
-    fetchedAt: Date.now(),
-  };
+  let result: { version: string; url: string; publishedAt: string | null; fetchedAt: number };
+  try {
+    const response = await fetch("https://api.github.com/repos/moby/moby/releases/latest", {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "Vessel-Docker-Update-Check" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!response.ok) throw new Error(`Docker release API returned ${response.status}`);
+    const release = await response.json() as { tag_name?: unknown; html_url?: unknown; published_at?: unknown; draft?: unknown; prerelease?: unknown };
+    if (release.draft || release.prerelease || typeof release.tag_name !== "string") throw new Error("No stable Docker Engine release was found");
+    const version = release.tag_name.replace(/^docker-v/i, "").replace(/^v/i, "");
+    if (!versionParts(version)) throw new Error("Docker release version could not be parsed");
+    result = {
+      version,
+      url: typeof release.html_url === "string" ? release.html_url : "https://github.com/moby/moby/releases/latest",
+      publishedAt: typeof release.published_at === "string" ? release.published_at : null,
+      fetchedAt: Date.now(),
+    };
+  } catch (apiError) {
+    // The release page is not subject to the REST API's unauthenticated quota.
+    // /releases/latest redirects to the latest stable tag, which is the same
+    // canonical Moby source used above.
+    const response = await fetch("https://github.com/moby/moby/releases/latest", {
+      headers: { Accept: "text/html", "User-Agent": "Vessel-Docker-Update-Check" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`Docker release page returned ${response.status}; API: ${apiError instanceof Error ? apiError.message : "unavailable"}`);
+    const finalUrl = new URL(response.url);
+    const tag = finalUrl.pathname.match(/^\/moby\/moby\/releases\/tag\/([^/]+)$/)?.[1];
+    const version = tag?.replace(/^docker-v/i, "").replace(/^v/i, "");
+    if (finalUrl.hostname !== "github.com" || !version || !versionParts(version)) throw new Error("Could not determine the latest stable Docker version from the release page");
+    result = { version, url: finalUrl.toString(), publishedAt: null, fetchedAt: Date.now() };
+  }
   cachedRelease = result;
   return result;
 }

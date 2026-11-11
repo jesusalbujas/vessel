@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authenticatedUser, listSessions, requestTokenFromRequest, revokeManagedSession } from "@/lib/control-plane";
+import { authenticatedUser, listSessions, requestTokenFromRequest, revokeManagedSession, userHasPermission } from "@/lib/control-plane";
 
 function privateJson(data: unknown, init?: ResponseInit) {
   const headers = new Headers(init?.headers);
@@ -11,7 +11,7 @@ function privateJson(data: unknown, init?: ResponseInit) {
 function administrator(request: Request) {
   const user = authenticatedUser(request);
   if (!user) return { response: privateJson({ error: "Authentication required" }, { status: 401 }) };
-  if (user.role !== "administrator") return { response: privateJson({ error: "Administrator access required" }, { status: 403 }) };
+  if (!userHasPermission(user, "sessions.manage")) return { response: privateJson({ error: "Permission denied" }, { status: 403 }) };
   return { user };
 }
 
