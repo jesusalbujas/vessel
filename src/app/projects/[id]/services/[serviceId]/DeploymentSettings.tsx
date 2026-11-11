@@ -1,18 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { ArrowUpRight, BookOpen, Boxes, Check, CircleHelp, Clock3, Copy, Eye, FileCode2, FolderTree, GitBranch, Hammer, LoaderCircle, Pause, Play, Plus, Rocket, Save, TerminalSquare, Trash2, UserRound, Workflow, X, Layers3, RotateCw, ScrollText, Square } from "lucide-react";
+import { ArrowUpRight, BookOpen, Boxes, CalendarClock, Check, CircleHelp, Clock3, Copy, Eye, FileCode2, FolderTree, GitBranch, Hammer, LoaderCircle, Pause, Play, Plus, Rocket, Save, TerminalSquare, Trash2, UserRound, Workflow, X, Layers3, RotateCw, ScrollText, Square } from "lucide-react";
 import { GitProviderLogo, type GitProviderBrand } from "@/app/components/GitProviderLogo";
 import { notifyVessel } from "@/app/components/ToastNotice";
 import { localizeProjectError } from "@/lib/project-errors";
 import { DeploymentCombobox, type DeploymentComboOption } from "./DeploymentCombobox";
 import { CodeLoadingSkeleton, DeploymentFormLoadingSkeleton } from "@/app/components/LoadingSkeletons";
+import VesselSelect from "@/app/components/VesselSelect";
 
 type Provider = { id: string; provider: GitProviderBrand; name: string; accountName: string | null };
 type Repository = { repository: string; fullName: string; private: boolean; defaultBranch: string };
 type Inspection = { branches: string[]; composeFiles: string[]; defaultBranch: string; treeTruncated: boolean };
+type ServiceSchedule = { id: string; serviceId: string; action: "restart" | "start" | "down" | "down_up"; startsAt: string; timezone: string; repeatMode: "once" | "daily" | "weekly"; weekdays: number[]; months: number[]; endsAt: string | null; enabled: boolean; lastRunStatus: "scheduled" | "running" | "succeeded" | "failed"; lastError: string | null };
 export type ApplicationGitSource = { id: string; name: string; repository: string; providerId: string | null; providerType: GitProviderBrand | null; providerName: string | null; branch: string; composePath: string; autoDeploy: boolean; triggerType: "push" | "tag" | "release" | "manual"; pollIntervalSeconds: number; watchPaths: string[]; enableSubmodules: boolean; lastStatus: string };
 
 const providerNames: Record<GitProviderBrand, { es: string; en: string }> = {
@@ -67,7 +69,7 @@ export function DeploymentSettings({ projectId, serviceId, appName, providers, s
   const [inspectionInitialized, setInspectionInitialized] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deploying, setDeploying] = useState(false);
-  const [deploymentOperation, setDeploymentOperation] = useState<"deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" | null>(null);
+  const [deploymentOperation, setDeploymentOperation] = useState<"deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" | "restart" | "logs" | "down" | null>(null);
   const [composeAction, setComposeAction] = useState<"deploy" | "rebuild" | "start" | "stop" | "restart" | "logs" | "down" | null>(null);
   const [composeServices, setComposeServices] = useState<string[]>([]);
   const [selectedComposeServices, setSelectedComposeServices] = useState<string[]>([]);
@@ -81,6 +83,83 @@ export function DeploymentSettings({ projectId, serviceId, appName, providers, s
   const [composePreviewYaml, setComposePreviewYaml] = useState("");
   const [composePreviewError, setComposePreviewError] = useState("");
   const [composePreviewCopied, setComposePreviewCopied] = useState(false);
+  const [schedules, setSchedules] = useState<ServiceSchedule[]>([]);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleAction, setScheduleAction] = useState<ServiceSchedule["action"]>("restart");
+  const [scheduleStart, setScheduleStart] = useState(() => { const date = new Date(Date.now() + 10 * 60_000); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 16); });
+  const [scheduleRepeat, setScheduleRepeat] = useState<ServiceSchedule["repeatMode"]>("once");
+  const [scheduleWeekdays, setScheduleWeekdays] = useState<number[]>([]);
+  const [scheduleMonths, setScheduleMonths] = useState<number[]>(Array.from({ length: 12 }, (_, index) => index + 1));
+  const [scheduleEnd, setScheduleEnd] = useState("");
+  const [scheduleNow, setScheduleNow] = useState(Date.now());
+
+  async function refreshSchedules() {
+    try {
+      const response = await fetch(`/api/project-schedules?projectId=${encodeURIComponent(projectId)}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (response.ok) setSchedules((payload.data ?? []).filter((item: ServiceSchedule) => item.serviceId === serviceId));
+    } catch { /* Keep the last known schedule visible during temporary network issues. */ }
+  }
+
+  useEffect(() => {
+    void refreshSchedules();
+    const poll = window.setInterval(() => void refreshSchedules(), 15_000);
+    const clock = window.setInterval(() => setScheduleNow(Date.now()), 1_000);
+    return () => { window.clearInterval(poll); window.clearInterval(clock); };
+  }, [projectId, serviceId]);
+
+  const nextSchedule = useMemo(() => {
+    const now = new Date(scheduleNow);
+    return schedules.filter((item) => item.enabled && item.lastRunStatus !== "running").map((item) => {
+      let next = new Date(item.startsAt);
+      if (!Number.isFinite(next.getTime())) return null;
+      if (item.repeatMode !== "once" && next <= now) {
+        for (let day = 0; day < 370 && next <= now; day++) {
+          next.setDate(next.getDate() + 1);
+          const weekday = next.getDay();
+          if (item.months.length && !item.months.includes(next.getMonth() + 1)) continue;
+          if (item.repeatMode === "weekly" && item.weekdays.length && !item.weekdays.includes(weekday)) continue;
+          if (item.endsAt && next > new Date(item.endsAt)) return null;
+          if (next > now) break;
+        }
+      }
+      return next > now && (!item.endsAt || next <= new Date(item.endsAt)) ? { schedule: item, at: next } : null;
+    }).filter((item): item is { schedule: ServiceSchedule; at: Date } => item !== null).sort((a, b) => a.at.getTime() - b.at.getTime())[0] ?? null;
+  }, [schedules, scheduleNow]);
+
+  async function saveServiceSchedule(event: React.FormEvent) {
+    event.preventDefault();
+    if (scheduleBusy) return;
+    setScheduleBusy(true);
+    try {
+      const response = await fetch("/api/project-schedules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create", projectId, serviceId, operation: scheduleAction, startsAt: new Date(scheduleStart).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, repeatMode: scheduleRepeat, weekdays: scheduleWeekdays, months: scheduleMonths, endsAt: scheduleEnd ? new Date(`${scheduleEnd}T23:59:00`).toISOString() : null }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? (es ? "No se pudo agendar la acción." : "Could not schedule the action."));
+      setSchedules((current) => [...current, payload.data]);
+      setScheduleOpen(false);
+      notifyVessel({ kind: "success", title: es ? "Acción agendada" : "Action scheduled" });
+    } catch (cause) { notifyVessel({ kind: "error", title: cause instanceof Error ? cause.message : es ? "No se pudo agendar la acción." : "Could not schedule the action." }); }
+    finally { setScheduleBusy(false); }
+  }
+
+  async function cancelServiceSchedule(id: string) {
+    setScheduleBusy(true);
+    try {
+      const response = await fetch("/api/project-schedules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "delete", projectId, id }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? (es ? "No se pudo cancelar." : "Could not cancel schedule."));
+      setSchedules((current) => current.filter((item) => item.id !== id));
+      notifyVessel({ kind: "success", title: es ? "Programación cancelada" : "Schedule cancelled" });
+    } catch (cause) { notifyVessel({ kind: "error", title: cause instanceof Error ? cause.message : es ? "No se pudo cancelar." : "Could not cancel schedule." }); }
+    finally { setScheduleBusy(false); }
+  }
+
+  function countdown(target: Date) {
+    const seconds = Math.max(0, Math.floor((target.getTime() - scheduleNow) / 1000));
+    const days = Math.floor(seconds / 86400); const hours = Math.floor(seconds % 86400 / 3600); const minutes = Math.floor(seconds % 3600 / 60); const rest = seconds % 60;
+    return days ? `${days}d ${hours}h ${minutes}m ${rest}s` : hours ? `${hours}h ${minutes}m ${rest}s` : `${minutes}m ${rest}s`;
+  }
 
   useEffect(() => {
     const initialProvider = source?.providerId ? providers.find((provider) => provider.id === source.providerId) : null;
@@ -285,6 +364,8 @@ export function DeploymentSettings({ projectId, serviceId, appName, providers, s
       <button className="projects-secondary application-compose-preview-trigger" type="button" onClick={() => void openComposePreview()} disabled={composePreviewBusy || !providerId || !repository || !branch || !composePath} data-tooltip={composePath || (es ? "Selecciona una rama y un archivo YAML" : "Select a branch and YAML file")}>{composePreviewBusy ? <LoaderCircle size={15} className="spinning" /> : <Eye size={15} />}{es ? "Vista previa Compose" : "Preview Compose"}</button>
     </div>
     <div className="application-deploy-toolbar">
+      <button className="projects-secondary service-schedule-trigger" type="button" onClick={() => setScheduleOpen(true)} data-tooltip={es ? "Programa una acción para este servicio." : "Schedule an action for this service."}><CalendarClock size={15} />{es ? "Agendar" : "Schedule"}</button>
+      {nextSchedule ? <div className="service-schedule-countdown" role="timer" aria-live="off"><CalendarClock size={16} /><span><strong>{es ? "Próxima ejecución" : "Next run"}</strong><small>{countdown(nextSchedule.at)} · {new Intl.DateTimeFormat(es ? "es" : "en", { dateStyle: "medium", timeStyle: "short" }).format(nextSchedule.at)}</small></span></div> : null}
       <button className="projects-primary" type="button" onClick={() => void openComposeAction("deploy")} disabled={!source || deploying || source.lastStatus === "deploying"} data-tooltip={es ? "Selecciona servicios y modo de ejecución antes de desplegar." : "Choose services and run mode before deploying."}>{deploymentOperation === "deploy" ? <LoaderCircle size={16} className="spinning" /> : <Rocket size={15} />}{deploymentOperation === "deploy" || (deploying && !deploymentOperation) ? (es ? "Desplegando…" : "Deploying…") : (es ? "Desplegar" : "Deploy")}</button>
       <button className="projects-secondary deploy-fresh-volumes" type="button" onClick={() => setFreshVolumesConfirm(true)} disabled={!source || deploying || source.lastStatus === "deploying"} data-tooltip={es ? "Elimina los volúmenes y datos persistentes antes de desplegar." : "Removes volumes and persistent data before deploying."} aria-describedby="fresh-volumes-tooltip"><Trash2 size={15} />{es ? "Volúmenes nuevos" : "Fresh volumes"}<span id="fresh-volumes-tooltip" className="sr-only">{es ? "Elimina los volúmenes y datos persistentes antes de desplegar." : "Removes volumes and persistent data before deploying."}</span></button>
       <button className="projects-secondary" type="button" onClick={() => void openComposeAction("rebuild")} disabled={!source || deploying || source.lastStatus === "deploying"} data-tooltip={es ? "Reconstruye las imágenes y recrea los servicios seleccionados." : "Rebuild images and recreate selected services."}><Hammer size={15} />{deploymentOperation === "rebuild" ? (es ? "Reconstruyendo…" : "Rebuilding…") : (es ? "Reconstruir" : "Rebuild")}</button>
@@ -333,5 +414,14 @@ export function DeploymentSettings({ projectId, serviceId, appName, providers, s
       {composePreviewBusy ? <div className="compose-preview-loading"><CodeLoadingSkeleton /></div> : composePreviewYaml && !composePreviewError ? <pre className="compose-preview-code">{composePreviewYaml}</pre> : null}
       <footer className="compose-preview-actions"><button type="button" onClick={() => setComposePreviewOpen(false)} disabled={composePreviewBusy}>{es ? "Cerrar" : "Close"}</button><button className="primary-button" type="button" onClick={() => void copyComposePreview()} disabled={composePreviewBusy || !composePreviewYaml || Boolean(composePreviewError)}>{composePreviewCopied ? <Check size={15} /> : <Copy size={15} />}{composePreviewCopied ? (es ? "Copiado" : "Copied") : (es ? "Copiar YAML" : "Copy YAML")}</button></footer>
     </section></div>, document.body) : null}
+
+    {scheduleOpen && typeof document !== "undefined" ? createPortal(<div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !scheduleBusy) setScheduleOpen(false); }}><section className="confirm-modal project-schedule-modal" role="dialog" aria-modal="true" aria-labelledby="service-schedule-title"><header className="project-modal-heading"><span className="workspace-project-icon"><CalendarClock size={20} /></span><button type="button" className="project-close" onClick={() => setScheduleOpen(false)} aria-label={es ? "Cerrar" : "Close"}><X size={18} /></button><div><span className="module-kicker">{es ? "PROGRAMACIÓN DEL SERVICIO" : "SERVICE SCHEDULER"}</span><h2 id="service-schedule-title">{es ? "Agendar una acción" : "Schedule an action"}</h2><p>{es ? `Define cuándo operar ${appName}.` : `Choose when to operate ${appName}.`}</p></div></header>
+      <form className="project-schedule-form" onSubmit={saveServiceSchedule}><div className="project-schedule-fields"><label className="modal-field"><span>{es ? "Acción" : "Action"}</span><VesselSelect value={scheduleAction} onChange={(event) => setScheduleAction(event.target.value as ServiceSchedule["action"])}><option value="restart">{es ? "Reiniciar" : "Restart"}</option><option value="start">{es ? "Iniciar" : "Start"}</option><option value="down">{es ? "Bajar / detener" : "Down / stop"}</option><option value="down_up">{es ? "Bajar y volver a levantar" : "Down and bring back up"}</option></VesselSelect></label><label className="modal-field"><span>{es ? "Fecha y hora" : "Date and time"}</span><input type="datetime-local" value={scheduleStart} onChange={(event) => setScheduleStart(event.target.value)} required /></label><label className="modal-field"><span>{es ? "Repetición" : "Repeat"}</span><VesselSelect value={scheduleRepeat} onChange={(event) => setScheduleRepeat(event.target.value as ServiceSchedule["repeatMode"])}><option value="once">{es ? "Una vez" : "Once"}</option><option value="daily">{es ? "Todos los días" : "Every day"}</option><option value="weekly">{es ? "Días seleccionados" : "Selected weekdays"}</option></VesselSelect></label></div>
+      {scheduleRepeat === "weekly" ? <fieldset className="schedule-chip-field"><legend>{es ? "Días de la semana" : "Days of the week"}</legend><div>{(es ? ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"] : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]).map((day, index) => <label key={day} className={scheduleWeekdays.includes(index) ? "is-selected" : ""}><input type="checkbox" checked={scheduleWeekdays.includes(index)} onChange={(event) => setScheduleWeekdays((current) => event.target.checked ? [...current, index] : current.filter((item) => item !== index))} />{day}</label>)}</div></fieldset> : null}
+      {scheduleRepeat !== "once" ? <><fieldset className="schedule-chip-field"><legend>{es ? "Meses activos" : "Active months"}</legend><div>{(es ? ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"] : ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]).map((month, index) => <label key={month} className={scheduleMonths.includes(index + 1) ? "is-selected" : ""}><input type="checkbox" checked={scheduleMonths.includes(index + 1)} onChange={(event) => setScheduleMonths((current) => event.target.checked ? [...current, index + 1] : current.filter((item) => item !== index + 1))} />{month}</label>)}</div></fieldset><label className="modal-field project-schedule-end"><span>{es ? "Repetir hasta (opcional)" : "Repeat until (optional)"}</span><input type="date" value={scheduleEnd} onChange={(event) => setScheduleEnd(event.target.value)} /></label></> : null}
+      {schedules.filter((item) => item.enabled).length ? <div className="project-schedule-list"><h3>{es ? "Programaciones activas" : "Active schedules"}</h3>{schedules.filter((item) => item.enabled).map((item) => <article key={item.id}><div><strong>{item.action === "down_up" ? (es ? "Bajar y levantar" : "Down and up") : item.action === "down" ? (es ? "Bajar" : "Down") : item.action === "start" ? (es ? "Iniciar" : "Start") : (es ? "Reiniciar" : "Restart")}</strong><small>{new Intl.DateTimeFormat(es ? "es" : "en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.startsAt))} · {item.repeatMode === "once" ? (es ? "Una vez" : "Once") : item.repeatMode === "daily" ? (es ? "Diaria" : "Daily") : (es ? "Semanal" : "Weekly")}</small></div><button type="button" className="projects-secondary" onClick={() => void cancelServiceSchedule(item.id)} disabled={scheduleBusy}><Trash2 size={14} />{es ? "Cancelar" : "Cancel"}</button></article>)}</div> : null}
+      <footer className="modal-actions"><button type="button" onClick={() => setScheduleOpen(false)} disabled={scheduleBusy}>{es ? "Cerrar" : "Close"}</button><button className="projects-primary" type="submit" disabled={scheduleBusy || !scheduleStart || (scheduleRepeat === "weekly" && !scheduleWeekdays.length) || !scheduleMonths.length}>{scheduleBusy ? <LoaderCircle size={15} className="spinning" /> : <CalendarClock size={15} />}{es ? "Agendar" : "Schedule"}</button></footer></form>
+      </section></div>, document.body) : null}
+
   </section>;
 }

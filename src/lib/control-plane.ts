@@ -139,6 +139,27 @@ function db(): DatabaseSync {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (project_id, variable_name)
     );
+    CREATE TABLE IF NOT EXISTS vessel_project_schedules (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES vessel_projects(id) ON DELETE CASCADE,
+      service_id TEXT NOT NULL REFERENCES vessel_project_services(id) ON DELETE CASCADE,
+      action TEXT NOT NULL, starts_at TEXT NOT NULL, timezone TEXT NOT NULL, engine_id TEXT,
+      repeat_mode TEXT NOT NULL, weekdays TEXT NOT NULL DEFAULT '[]', months TEXT NOT NULL DEFAULT '[]',
+      ends_at TEXT, enabled INTEGER NOT NULL DEFAULT 1, last_run_key TEXT,
+      last_run_status TEXT NOT NULL DEFAULT 'scheduled', last_error TEXT,
+      created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS vessel_project_schedules_due ON vessel_project_schedules(enabled, starts_at);
+    CREATE TABLE IF NOT EXISTS vessel_container_schedules (
+      id TEXT PRIMARY KEY, container_id TEXT NOT NULL, container_name TEXT NOT NULL, engine_id TEXT,
+      action TEXT NOT NULL, starts_at TEXT NOT NULL, timezone TEXT NOT NULL, repeat_mode TEXT NOT NULL,
+      weekdays TEXT NOT NULL DEFAULT '[]', months TEXT NOT NULL DEFAULT '[]', ends_at TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1, last_run_key TEXT, last_run_status TEXT NOT NULL DEFAULT 'scheduled',
+      last_error TEXT, created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS vessel_container_schedules_due ON vessel_container_schedules(enabled, starts_at);
+    CREATE INDEX IF NOT EXISTS vessel_container_schedules_target ON vessel_container_schedules(container_id, engine_id, enabled);
     CREATE TABLE IF NOT EXISTS vessel_git_sources (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, repository TEXT NOT NULL,
       branch TEXT NOT NULL, compose_path TEXT NOT NULL, access_token TEXT,
@@ -291,6 +312,10 @@ function db(): DatabaseSync {
     if (!scheduledTaskColumns.some((column) => column.name === "options_json")) database.exec("ALTER TABLE vessel_scheduled_tasks ADD COLUMN options_json TEXT NOT NULL DEFAULT '[]'");
     database.exec("CREATE INDEX IF NOT EXISTS vessel_scheduled_tasks_project ON vessel_scheduled_tasks(project_id, enabled, name COLLATE NOCASE)");
     const scheduledRunColumns = database.prepare("PRAGMA table_info(vessel_scheduled_task_runs)").all() as Array<{ name: string }>;
+    const projectScheduleColumns = database.prepare("PRAGMA table_info(vessel_project_schedules)").all() as Array<{ name: string }>;
+    if (!projectScheduleColumns.some((column) => column.name === "engine_id")) database.exec("ALTER TABLE vessel_project_schedules ADD COLUMN engine_id TEXT");
+    if (!projectScheduleColumns.some((column) => column.name === "last_run_status")) database.exec("ALTER TABLE vessel_project_schedules ADD COLUMN last_run_status TEXT NOT NULL DEFAULT 'scheduled'");
+    if (!projectScheduleColumns.some((column) => column.name === "last_error")) database.exec("ALTER TABLE vessel_project_schedules ADD COLUMN last_error TEXT");
     if (!scheduledRunColumns.some((column) => column.name === "started_by")) database.exec("ALTER TABLE vessel_scheduled_task_runs ADD COLUMN started_by TEXT");
     database.prepare("UPDATE vessel_scheduled_tasks SET project_id = 'default' WHERE project_id IS NULL OR project_id = ''").run();
   }
@@ -1445,6 +1470,96 @@ export type VesselProjectServiceRecord = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type VesselProjectScheduleAction = "restart" | "start" | "down" | "down_up";
+export type VesselProjectScheduleRecord = {
+  id: string; projectId: string; serviceId: string; action: VesselProjectScheduleAction;
+  startsAt: string; timezone: string; engineId: string | null; repeatMode: "once" | "daily" | "weekly";
+  weekdays: number[]; months: number[]; endsAt: string | null; enabled: boolean;
+  lastRunKey: string | null; lastRunStatus: "scheduled" | "running" | "succeeded" | "failed"; lastError: string | null; createdAt: string; updatedAt: string;
+};
+type VesselProjectScheduleRow = Omit<VesselProjectScheduleRecord, "weekdays" | "months" | "enabled"> & { weekdays: string; months: string; enabled: number };
+const projectScheduleSelect = `SELECT id, project_id AS projectId, service_id AS serviceId, action,
+  starts_at AS startsAt, timezone, engine_id AS engineId, repeat_mode AS repeatMode, weekdays, months, ends_at AS endsAt,
+  enabled, last_run_key AS lastRunKey, last_run_status AS lastRunStatus, last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt
+  FROM vessel_project_schedules`;
+function mapProjectSchedule(row: VesselProjectScheduleRow): VesselProjectScheduleRecord {
+  return { ...row, weekdays: JSON.parse(row.weekdays) as number[], months: JSON.parse(row.months) as number[], enabled: row.enabled === 1 };
+}
+export function listVesselProjectSchedules(projectId?: string): VesselProjectScheduleRecord[] {
+  const rows = (projectId
+    ? db().prepare(`${projectScheduleSelect} WHERE project_id = ? ORDER BY starts_at`).all(projectId)
+    : db().prepare(`${projectScheduleSelect} WHERE enabled = 1 ORDER BY starts_at`).all()) as VesselProjectScheduleRow[];
+  return rows.map(mapProjectSchedule);
+}
+export function vesselProjectScheduleById(id: string): VesselProjectScheduleRecord | null {
+  const row = db().prepare(`${projectScheduleSelect} WHERE id = ?`).get(id) as VesselProjectScheduleRow | undefined;
+  return row ? mapProjectSchedule(row) : null;
+}
+export function createVesselProjectSchedule(input: Omit<VesselProjectScheduleRecord, "id" | "enabled" | "lastRunKey" | "lastRunStatus" | "lastError" | "createdAt" | "updatedAt"> & { createdBy?: string | null }) {
+  const id = randomUUID();
+  db().prepare(`INSERT INTO vessel_project_schedules (id, project_id, service_id, action, starts_at, timezone, engine_id, repeat_mode, weekdays, months, ends_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.projectId, input.serviceId, input.action, input.startsAt, input.timezone, input.engineId, input.repeatMode, JSON.stringify(input.weekdays), JSON.stringify(input.months), input.endsAt, input.createdBy ?? null);
+  return vesselProjectScheduleById(id)!;
+}
+export function deleteVesselProjectSchedule(id: string, projectId: string): boolean {
+  return Number(db().prepare("DELETE FROM vessel_project_schedules WHERE id = ? AND project_id = ?").run(id, projectId).changes) > 0;
+}
+export function claimVesselProjectScheduleRun(id: string, runKey: string, oneTime = false): boolean {
+  return Number(db().prepare(`UPDATE vessel_project_schedules SET last_run_key = ?, last_run_status = 'running', last_error = NULL, enabled = CASE WHEN ? = 1 THEN 0 ELSE enabled END, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND enabled = 1 AND (last_run_key IS NULL OR last_run_key <> ?)` ).run(runKey, oneTime ? 1 : 0, id, runKey).changes) > 0;
+}
+export function finishVesselProjectScheduleRun(id: string, status: "succeeded" | "failed", error?: string) {
+  db().prepare("UPDATE vessel_project_schedules SET last_run_status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .run(status, status === "failed" ? (error ?? "La acción programada falló").slice(0, 500) : null, id);
+}
+export function gitSourceHasDeferredProjectSchedule(sourceId: string): boolean {
+  return Number((db().prepare(`SELECT COUNT(*) AS count FROM vessel_project_schedules s
+    JOIN vessel_project_services ps ON ps.id = s.service_id
+    WHERE ps.target_type = 'git' AND ps.target_ref = ? AND s.enabled = 1 AND s.action = 'down_up'` ).get(sourceId) as { count: number }).count) > 0;
+}
+
+export type VesselContainerScheduleRecord = {
+  id: string; containerId: string; containerName: string; engineId: string | null;
+  action: VesselProjectScheduleAction; startsAt: string; timezone: string; repeatMode: "once" | "daily" | "weekly";
+  weekdays: number[]; months: number[]; endsAt: string | null; enabled: boolean;
+  lastRunKey: string | null; lastRunStatus: "scheduled" | "running" | "succeeded" | "failed"; lastError: string | null;
+  createdAt: string; updatedAt: string;
+};
+type VesselContainerScheduleRow = Omit<VesselContainerScheduleRecord, "weekdays" | "months" | "enabled"> & { weekdays: string; months: string; enabled: number };
+const containerScheduleSelect = `SELECT id, container_id AS containerId, container_name AS containerName, engine_id AS engineId, action,
+  starts_at AS startsAt, timezone, repeat_mode AS repeatMode, weekdays, months, ends_at AS endsAt, enabled,
+  last_run_key AS lastRunKey, last_run_status AS lastRunStatus, last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt
+  FROM vessel_container_schedules`;
+function mapContainerSchedule(row: VesselContainerScheduleRow): VesselContainerScheduleRecord {
+  return { ...row, weekdays: JSON.parse(row.weekdays) as number[], months: JSON.parse(row.months) as number[], enabled: row.enabled === 1 };
+}
+export function listVesselContainerSchedules(containerId?: string, engineId?: string | null, includeDisabled = false): VesselContainerScheduleRecord[] {
+  let query = `${containerScheduleSelect} WHERE 1 = 1`;
+  if (!includeDisabled) query += " AND enabled = 1";
+  const params: Array<string | null> = [];
+  if (containerId) { query += " AND container_id = ?"; params.push(containerId); }
+  if (engineId !== undefined) { query += " AND engine_id IS ?"; params.push(engineId); }
+  query += " ORDER BY starts_at";
+  return (db().prepare(query).all(...params) as VesselContainerScheduleRow[]).map(mapContainerSchedule);
+}
+export function createVesselContainerSchedule(input: Omit<VesselContainerScheduleRecord, "id" | "enabled" | "lastRunKey" | "lastRunStatus" | "lastError" | "createdAt" | "updatedAt"> & { createdBy?: string | null }) {
+  const id = randomUUID();
+  db().prepare(`INSERT INTO vessel_container_schedules (id, container_id, container_name, engine_id, action, starts_at, timezone, repeat_mode, weekdays, months, ends_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.containerId, input.containerName, input.engineId, input.action, input.startsAt, input.timezone, input.repeatMode, JSON.stringify(input.weekdays), JSON.stringify(input.months), input.endsAt, input.createdBy ?? null);
+  return mapContainerSchedule(db().prepare(`${containerScheduleSelect} WHERE id = ?`).get(id) as VesselContainerScheduleRow);
+}
+export function deleteVesselContainerSchedule(id: string, containerId: string, engineId: string | null): boolean {
+  return Number(db().prepare("DELETE FROM vessel_container_schedules WHERE id = ? AND container_id = ? AND engine_id IS ?").run(id, containerId, engineId).changes) > 0;
+}
+export function claimVesselContainerScheduleRun(id: string, runKey: string, oneTime = false): boolean {
+  return Number(db().prepare(`UPDATE vessel_container_schedules SET last_run_key = ?, last_run_status = 'running', last_error = NULL, enabled = CASE WHEN ? = 1 THEN 0 ELSE enabled END, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND enabled = 1 AND (last_run_key IS NULL OR last_run_key <> ?)` ).run(runKey, oneTime ? 1 : 0, id, runKey).changes) > 0;
+}
+export function finishVesselContainerScheduleRun(id: string, status: "succeeded" | "failed", error?: string) {
+  db().prepare("UPDATE vessel_container_schedules SET last_run_status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .run(status, status === "failed" ? (error ?? "La acción programada falló").slice(0, 500) : null, id);
+}
 
 export function listVesselProjects(): VesselProjectRecord[] {
   const rows = db().prepare(`SELECT p.id, p.name, p.description, p.created_by AS createdBy,

@@ -10,6 +10,29 @@ import { remoteServerWithKey } from "@/lib/remote-servers";
 
 export { currentDockerEngineId, dockerCliEnvironment, runWithDockerEngine } from "@/lib/docker/engine-context";
 
+export async function runWithDockerTarget<T>(engineId: string | null, operation: () => Promise<T> | T): Promise<T> {
+  if (!engineId || engineId === "local") return await runWithDockerEngine(null, operation);
+  const engine = remoteServerWithKey(engineId);
+  if (!engine) throw new Error("El servidor programado ya no está registrado");
+  const registration = await fetch(`${dockerApiBase()}/engines/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(engine), cache: "no-store", signal: AbortSignal.timeout(10_000) });
+  if (!registration.ok) throw new Error("No se pudo preparar la conexión con el Engine remoto");
+  const validHost = isIP(engine.host) !== 0 || engine.host.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
+  if (!validHost || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(engine.username)) throw new Error("La configuración SSH guardada para este servidor no es válida");
+  const home = await mkdtemp(join(tmpdir(), "vessel-scheduled-engine-"));
+  try {
+    const sshDirectory = join(home, ".ssh");
+    await mkdir(sshDirectory, { mode: 0o700 });
+    const identityFile = join(sshDirectory, "id_ed25519");
+    const knownHostsFile = join(sshDirectory, "known_hosts");
+    const alias = `vessel-${engine.id}`;
+    await writeFile(identityFile, engine.privateKey, { mode: 0o600 });
+    await writeFile(knownHostsFile, `${engine.knownHost.trim()}\n`, { mode: 0o600 });
+    await writeFile(join(sshDirectory, "config"), [`Host ${alias}`, `  HostName ${engine.host}`, `  User ${engine.username}`, `  Port ${engine.port}`, `  IdentityFile ${identityFile}`, "  IdentitiesOnly yes", "  StrictHostKeyChecking yes", `  UserKnownHostsFile ${knownHostsFile}`, "  BatchMode yes", ""].join("\n"), { mode: 0o600 });
+    await chmod(home, 0o700);
+    return await runWithDockerEngine(engineId, () => runWithDockerCliEnvironment(engineId, { HOME: home, DOCKER_HOST: `ssh://${engine.username}@${alias}`, DOCKER_CONTEXT: "" }, operation));
+  } finally { await rm(home, { recursive: true, force: true }); }
+}
+
 export function withDockerEngine<T extends Response | Promise<Response>>(handler: (request: Request) => T) {
   return async (request: Request): Promise<Response> => {
     if (!authenticatedUser(request)) return await handler(request);

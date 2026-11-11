@@ -29,6 +29,7 @@ export async function mutateResourceAlerts(request: Request) {
         name: String(input.name ?? ""), engineId: String(input.engineId ?? ""),
         metric: input.metric as ResourceMetric, operator: input.operator as "above" | "below",
         threshold: Number(input.threshold), consecutiveSamples: Number(input.consecutiveSamples),
+        notificationIntervalMinutes: Number(input.notificationIntervalMinutes ?? 15),
       });
       return NextResponse.json({ rule }, { headers });
     }

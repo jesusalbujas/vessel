@@ -78,18 +78,19 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
       try {
         const response = await fetch("/api/resource-alerts", { cache: "no-store" });
         if (!response.ok || stopped) return;
-        const payload = await response.json() as { events?: Array<{ id: string; ruleName: string; engineName: string; metric: string; value: number; state: string }> };
+        const payload = await response.json() as { events?: Array<{ id: string; ruleName: string; engineName: string; metric: string; value: number; state: string; lastNotifiedAt?: string; resolvedAt?: string | null }> };
         const seenKey = "vessel-resource-alert-notices";
         const seen = JSON.parse(window.localStorage.getItem(seenKey) || "{}") as Record<string, string>;
         const showActiveAfterLogin = window.sessionStorage.getItem("vessel-show-active-alerts-after-login") === "1";
         window.sessionStorage.removeItem("vessel-show-active-alerts-after-login");
+        const noticeStamp = (alert: NonNullable<typeof payload.events>[number]) => alert.state === "active" ? `active:${alert.lastNotifiedAt ?? "initial"}` : `resolved:${alert.resolvedAt ?? "resolved"}`;
         const next = (showActiveAfterLogin ? payload.events?.find((alert) => alert.state === "active") : undefined)
-          ?? (payload.events ?? []).find((alert) => alert.state === "active" ? seen[alert.id] !== "active" : seen[alert.id] === "active");
+          ?? (payload.events ?? []).find((alert) => alert.state === "active" ? seen[alert.id] !== noticeStamp(alert) : typeof seen[alert.id] === "string" && seen[alert.id].startsWith("active:"));
         if (!next) return;
         const metric = next.metric === "cpu" ? "CPU" : next.metric === "memory" ? (language === "es" ? "memoria" : "memory") : (language === "es" ? "disco" : "disk");
         const resolved = next.state === "resolved";
         setNotice({ kind: resolved ? "success" : "error", title: resolved ? (language === "es" ? `Alerta resuelta · ${next.ruleName}` : `Alert resolved · ${next.ruleName}`) : (language === "es" ? `Alerta de recursos · ${next.ruleName}` : `Resource alert · ${next.ruleName}`), detail: resolved ? (language === "es" ? `${next.engineName}: ${metric} volvió al rango.` : `${next.engineName}: ${metric} returned to range.`) : (language === "es" ? `${next.engineName}: ${metric} en ${Number(next.value).toFixed(1)}%.` : `${next.engineName}: ${metric} at ${Number(next.value).toFixed(1)}%.`) });
-        seen[next.id] = next.state;
+        seen[next.id] = noticeStamp(next);
         const entries = Object.entries(seen).slice(-300);
         window.localStorage.setItem(seenKey, JSON.stringify(Object.fromEntries(entries)));
       } catch { /* Alert polling must not interrupt navigation or other toasts. */ }

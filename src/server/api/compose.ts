@@ -241,6 +241,24 @@ export async function getCompose(request: Request) {
     return privateJson({ error: "Compose project not found" }, { status: 404 });
   }
 }
+
+export async function runScheduledComposeProject(name: string, projectId: string, action: "restart" | "start" | "down" | "down_up") {
+  if (!validName(name)) throw new Error("Nombre Compose inválido");
+  const sourceFile = await discoveredComposeHostFile(name);
+  const composeFile = sourceFile ? (await discoveredComposeFile(name)) ?? validatedComposePath(sourceFile) : join(/* turbopackIgnore: true */ root, name, "compose.yaml");
+  const directory = sourceFile ? dirname(validatedComposePath(sourceFile)) : join(/* turbopackIgnore: true */ root, name);
+  try { await access(composeFile); } catch { throw new Error("No se pudo leer el archivo Compose del proyecto"); }
+  if (action === "down_up") {
+    const stopped = await runCompose(name, ["down", "--remove-orphans"], composeFile, directory, 12000, projectId);
+    if (stopped.code !== 0) throw new Error("Compose down falló; no se ejecutó el up para evitar dejar el estado ambiguo");
+    const started = await runCompose(name, ["up", "--detach", "--remove-orphans"], composeFile, directory, 12000, projectId);
+    if (started.code !== 0) throw new Error("Compose down se completó, pero Compose up falló");
+    return;
+  }
+  const result = await runCompose(name, [action, ...(action === "down" ? ["--remove-orphans"] : [])], composeFile, directory, 12000, projectId);
+  if (result.code !== 0) throw new Error(`Compose ${action} falló`);
+}
+
 export async function postCompose(request: Request) {
   const user = mutationUser(request);
   if (!user) return privateJson({ error: "Authentication required" }, { status: 401 });
@@ -345,7 +363,7 @@ export async function postCompose(request: Request) {
         source = "docker-labels";
       }
     }
-    await saveCompose(body.name, body.yaml);
+    if (body.action !== "services") await saveCompose(body.name, body.yaml);
     if (body.action === "services") {
       const dir = await mkdtemp(join(/* turbopackIgnore: true */ root, body.name, ".vessel-services-"));
       try {

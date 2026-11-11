@@ -4,6 +4,8 @@ export async function register() {
     startGitSourcePoller();
     const { startScheduledTaskScheduler } = await import("@/lib/scheduled-tasks");
     startScheduledTaskScheduler();
+    const { startProjectScheduler } = await import("@/lib/project-scheduler");
+    startProjectScheduler();
     const { startResourceAlertMonitor } = await import("@/lib/resource-alerts");
     startResourceAlertMonitor();
   }

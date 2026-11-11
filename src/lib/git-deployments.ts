@@ -19,16 +19,18 @@ import {
   secretStorageReady,
   updateGitDeployment,
   updateGitSourceEventRef,
+  gitSourceHasDeferredProjectSchedule,
   updateGitSourceState,
 } from "@/lib/control-plane";
 import { gitProviderAccessToken, recentGitReleaseTags } from "@/lib/git-provider-clients";
 import { portConflict, missingPublishedPort, type ContainerNetwork, type PublishedPort } from "@/lib/compose-network";
+import { dockerCliEnvironment } from "@/lib/docker/engine-context";
 
 const checkoutRoot = resolve(/* turbopackIgnore: true */ process.env.VESSEL_GIT_ROOT ?? "/app/data/git-sources");
 const activeDeployments = new Set<string>();
 const activeSourceChecks = new Set<string>();
 type GitDeploymentTarget = { ref: string; commit?: string; eventType?: "push" | "tag" | "release"; refName?: string };
-export type GitDeploymentOperation = "deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" | "restart" | "logs" | "down";
+export type GitDeploymentOperation = "deploy" | "rebuild" | "fresh_volumes" | "start" | "stop" | "restart" | "logs" | "down" | "down_up";
 export type GitDeploymentOptions = { services?: string[]; detach?: boolean };
 const queuedDeployments = new Map<string, Array<{ trigger: "manual" | "automatic"; target?: GitDeploymentTarget; deploymentId: string }>>();
 const activeBuildProcesses = new Map<string, ChildProcess>();
@@ -46,7 +48,8 @@ const inheritedEnvironmentKeys = [
 ];
 
 function safeCommandEnvironment(): NodeJS.ProcessEnv {
-  return Object.fromEntries(inheritedEnvironmentKeys.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]])) as NodeJS.ProcessEnv;
+  const contextual = dockerCliEnvironment();
+  return Object.fromEntries(inheritedEnvironmentKeys.flatMap((key) => contextual[key] !== undefined ? [[key, contextual[key]]] : process.env[key] === undefined ? [] : [[key, process.env[key]]])) as NodeJS.ProcessEnv;
 }
 
 function gitEnvironment(token: string | null, username = "x-access-token"): NodeJS.ProcessEnv {
@@ -317,6 +320,7 @@ export function startGitDeployment(id: string, trigger: "manual" | "automatic" =
 }
 
 export function scheduleGitDeployment(id: string, trigger: "manual" | "automatic" = "manual", target?: GitDeploymentTarget) {
+  if (trigger === "automatic" && gitSourceHasDeferredProjectSchedule(id)) return;
   if (!activeDeployments.has(id)) { startGitDeployment(id, trigger, target); return; }
   const queue = queuedDeployments.get(id) ?? [];
   const key = target?.eventType && target.refName ? `${target.eventType}:${target.refName}` : target?.commit ?? target?.ref ?? "branch";
@@ -453,7 +457,7 @@ async function performGitDeployment(id: string, deploymentId: string, runtime: N
       appendGitDeploymentLog(deploymentId, "\nStarting Compose services…\n");
       await runCompose(repositoryDirectory, composeFile, name, temp.path, ["up", ...(options.detach === false ? [] : ["--detach"]), ...selectedServices], deploymentId, runtime.secrets, id);
     } else if (operation === "restart" || operation === "logs") {
-      updateGitDeployment(deploymentId, { phase: operation === "logs" ? "reading_logs" : "restarting" });
+      updateGitDeployment(deploymentId, { phase: operation === "logs" ? "validating_compose" : "starting" });
       await runCompose(repositoryDirectory, composeFile, name, temp.path, [operation, ...(operation === "logs" ? ["--tail", "200", "--no-color"] : []), ...selectedServices], deploymentId, runtime.secrets, id);
     } else if (operation === "down") {
       updateGitDeployment(deploymentId, { phase: "stopping" });
@@ -463,6 +467,11 @@ async function performGitDeployment(id: string, deploymentId: string, runtime: N
         updateGitDeployment(deploymentId, { phase: "cleaning_volumes" });
         appendGitDeploymentLog(deploymentId, "\nRemoving this Compose project's containers and volumes…\n");
         await runCompose(repositoryDirectory, composeFile, name, temp.path, ["down", "--volumes", "--remove-orphans"], deploymentId, runtime.secrets, id);
+      }
+      if (operation === "down_up") {
+        updateGitDeployment(deploymentId, { phase: "stopping" });
+        appendGitDeploymentLog(deploymentId, "\nScheduled window: bringing the Compose project down before applying the latest repository revision…\n");
+        await runCompose(repositoryDirectory, composeFile, name, temp.path, ["down", "--remove-orphans"], deploymentId, runtime.secrets, id);
       }
       updateGitDeployment(deploymentId, { phase: operation === "rebuild" ? "rebuilding" : "building_and_deploying" });
       appendGitDeploymentLog(deploymentId, operation === "rebuild" ? "\nRebuilding and recreating Compose services…\n" : "\nBuilding and deploying services…\n");

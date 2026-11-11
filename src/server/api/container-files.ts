@@ -4,8 +4,10 @@ import { authenticatedUser, userHasPermission } from "@/lib/control-plane";
 import { dockerApiBase, dockerHeaders, isDockerConfigured } from "@/lib/docker/client";
 import { listDockerContainers } from "@/lib/docker/containers";
 
-const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+// Allow tar headers and block padding around an eligible 32 MB file.
+const MAX_ARCHIVE_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024;
+const MAX_DIRECTORY_LIST_BYTES = 8 * 1024 * 1024;
 type TarEntry = { name: string; size: number; type: "file" | "directory" | "symlink" };
 
 function privateJson(data: unknown, status = 200) {
@@ -45,11 +47,86 @@ async function fetchArchive(id: string, path: string): Promise<Buffer> {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > MAX_ARCHIVE_BYTES) { await reader.cancel(); throw new Error("El archivo o carpeta supera el límite de transferencia de 32 MB."); }
+      if (total > MAX_ARCHIVE_BYTES) { await reader.cancel(); throw new Error("El archivo supera el límite de transferencia de 32 MB. Comprímelo dentro del contenedor para transferirlo."); }
       chunks.push(Buffer.from(value));
     }
   } finally { reader.releaseLock(); }
   return Buffer.concat(chunks, total);
+}
+
+async function listContainerDirectory(id: string, path: string): Promise<TarEntry[]> {
+  // List only direct children with a tiny shell command. Docker's archive API
+  // recursively tars the whole directory, so using it to list `/` fails on
+  // ordinary containers whose filesystem is larger than the transfer limit.
+  const script = [
+    'dir="$1"',
+    'for item in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do',
+    '  [ -e "$item" ] || [ -L "$item" ] || continue',
+    '  name=${item##*/}',
+    '  if [ -L "$item" ]; then kind=symlink; size=',
+    '  elif [ -d "$item" ]; then kind=directory; size=',
+    '  else kind=file; size=$(stat -c %s "$item" 2>/dev/null || printf ""); fi',
+    '  encoded=$(printf %s "$name" | base64 | tr -d "\\n") || exit 20',
+    '  printf "%s\\t%s\\t%s\\n" "$kind" "$size" "$encoded"',
+    'done',
+  ].join("\n");
+  const created = await fetch(`${dockerApiBase()}/containers/${encodeURIComponent(id)}/exec`, {
+    method: "POST", headers: { ...dockerHeaders(), "Content-Type": "application/json" }, cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({ AttachStdout: true, AttachStderr: true, Tty: false, Cmd: ["/bin/sh", "-c", script, "vessel-files", path] }),
+  });
+  if (created.status === 409) throw new Error("Inicia el contenedor para explorar sus archivos.");
+  if (!created.ok) throw new Error(`Docker no pudo iniciar el explorador de archivos (${created.status}).`);
+  const execId = (await created.json().catch(() => null))?.Id;
+  if (typeof execId !== "string" || !/^[a-f0-9]{12,64}$/i.test(execId)) throw new Error("Docker no devolvió una sesión válida para explorar archivos.");
+  const started = await fetch(`${dockerApiBase()}/exec/${encodeURIComponent(execId)}/start`, {
+    method: "POST", headers: { ...dockerHeaders(), "Content-Type": "application/json" }, cache: "no-store",
+    signal: AbortSignal.timeout(15_000), body: JSON.stringify({ Detach: false, Tty: false }),
+  });
+  if (!started.ok || !started.body) throw new Error(started.status === 409 ? "Inicia el contenedor para explorar sus archivos." : `Docker no pudo leer la carpeta (${started.status}).`);
+  const reader = started.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_DIRECTORY_LIST_BYTES) { await reader.cancel(); throw new Error("La carpeta tiene demasiadas entradas para mostrar en una sola vista."); }
+      chunks.push(Buffer.from(value));
+    }
+  } finally { reader.releaseLock(); }
+  const stream = Buffer.concat(chunks, total);
+  const output: Buffer[] = [];
+  const errors: Buffer[] = [];
+  let offset = 0;
+  while (offset + 8 <= stream.length) {
+    const channel = stream[offset];
+    const size = stream.readUInt32BE(offset + 4);
+    if (size > stream.length - offset - 8) throw new Error("Docker devolvió una respuesta incompleta al leer la carpeta.");
+    const payload = stream.subarray(offset + 8, offset + 8 + size);
+    if (channel === 1) output.push(payload);
+    else if (channel === 2) errors.push(payload);
+    offset += 8 + size;
+  }
+  if (offset !== stream.length) throw new Error("Docker devolvió una respuesta no válida al leer la carpeta.");
+  const listing = Buffer.concat(output).toString("utf8");
+  const stderr = Buffer.concat(errors).toString("utf8").trim();
+  if (stderr && !listing) {
+    if (/executable file not found|stat \/bin\/sh|no such file/i.test(stderr)) throw new Error("Este contenedor no incluye una shell compatible para explorar sus archivos.");
+    throw new Error("El contenedor no permitió leer esta carpeta. Revisa sus permisos.");
+  }
+  const entries: TarEntry[] = [];
+  for (const line of listing.split("\n")) {
+    if (!line) continue;
+    const [kind, sizeText, encoded] = line.split("\t");
+    if (!(kind === "file" || kind === "directory" || kind === "symlink") || !encoded || encoded.length > 4096) continue;
+    const name = Buffer.from(encoded, "base64").toString("utf8");
+    if (!name || name === "." || name === ".." || /[\/\0]/.test(name)) continue;
+    const size = sizeText && /^\d+$/.test(sizeText) ? Number(sizeText) : 0;
+    entries.push({ name, size: Number.isSafeInteger(size) ? size : 0, type: kind });
+  }
+  return entries.sort((a, b) => Number(b.type === "directory") - Number(a.type === "directory") || a.name.localeCompare(b.name));
 }
 
 function tarEntries(archive: Buffer): Array<{ meta: TarEntry; data: Buffer }> {
@@ -129,14 +206,15 @@ export async function getContainerFiles(request: Request) {
   try {
     const id = await containerId(url.searchParams.get("serviceId"));
     const path = safeContainerPath(url.searchParams.get("path"));
-    const archive = await fetchArchive(id, path);
     const action = url.searchParams.get("action") ?? "list";
-    if (action === "list") return privateJson({ path, entries: listChildren(archive, path) });
+    if (action === "list") return privateJson({ path, entries: await listContainerDirectory(id, path) });
     if (action !== "download") return privateJson({ error: "Acción de archivos inválida." }, 400);
+    const archive = await fetchArchive(id, path);
     const requestedName = path.split("/").filter(Boolean).pop();
     const files = tarEntries(archive).filter(({ meta }) => meta.type === "file");
     const found = files.find(({ meta }) => meta.name.replace(/\/+$/, "").split("/").pop() === requestedName) ?? (files.length === 1 ? files[0] : undefined);
     if (!found) return privateJson({ error: "La ruta no apunta a un archivo regular." }, 400);
+    if (found.data.byteLength > MAX_UPLOAD_BYTES) return privateJson({ error: "El archivo supera el límite de transferencia de 32 MB. Comprímelo dentro del contenedor para transferirlo." }, 413);
     return new NextResponse(new Uint8Array(found.data), { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(found.data.byteLength), "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(requestedName ?? "download")}`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" } });
   } catch (error) { return privateJson({ error: error instanceof Error ? error.message : "No se pudo leer el contenedor." }, 400); }
 }
@@ -169,6 +247,7 @@ export async function postContainerFiles(request: Request) {
     const entries = tarEntries(archive).filter(({ meta }) => meta.type === "file");
     const file = entries.find(({ meta }) => meta.name.replace(/\/+$/, "").split("/").pop() === name) ?? (entries.length === 1 ? entries[0] : undefined);
     if (!file) return privateJson({ error: "Solo se pueden transferir archivos; las carpetas se deben descargar o comprimir primero." }, 400);
+    if (file.data.byteLength > MAX_UPLOAD_BYTES) return privateJson({ error: "El archivo supera el límite de transferencia de 32 MB. Comprímelo dentro del contenedor para transferirlo." }, 413);
     await uploadArchive(destinationId, destinationPath, name, tarFile(name, file.data));
     return privateJson({ ok: true, name, transferId: randomUUID() });
   } catch (error) { return privateJson({ error: error instanceof Error ? error.message : "No se pudo transferir el archivo." }, 400); }
