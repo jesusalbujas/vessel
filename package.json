@@ -1,6 +1,6 @@
 {
   "name": "vessel",
-  "version": "0.30.10",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

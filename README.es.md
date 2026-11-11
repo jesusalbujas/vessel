@@ -137,7 +137,7 @@ El puerto web se enlaza a `127.0.0.1` de forma predeterminada. Para publicar Ves
 
 El Dockerfile mantenido está en `docker/Dockerfile`; también se incluye `docker/compose.yaml` para desplegar Vessel con un Compose autocontenido. Los Compose de la raíz utilizan el mismo Dockerfile.
 
-Para publicar en Docker Hub, agrega los secretos de Actions `DOCKERHUB_USERNAME` y `DOCKERHUB_TOKEN` al repositorio y sube un tag de versión, por ejemplo `v0.31.0`. El flujo `publish.yaml` compila `DOCKERHUB_USERNAME/vessel` para `linux/amd64` y `linux/arm64` y publica el tag de lanzamiento, los tags semánticos y `latest`. La versión mostrada en Vessel se compila desde ese tag. `ci.yaml` verifica los tipos y compila en los pushes y pull requests dirigidos a `main` o `master`.
+Para publicar en Docker Hub, agrega los secretos de Actions `DOCKERHUB_USERNAME` (debe ser `jalbujas`) y `DOCKERHUB_TOKEN` (un token de Docker Hub con permiso para publicar) al repositorio. Luego sube un tag de versión, por ejemplo `v0.1.0`. El flujo `publish.yaml` compila `docker.io/jalbujas/vessel` para `linux/amd64` y `linux/arm64` y publica el tag de versión, los tags semánticos y `latest`. Cuando la publicación de la imagen termina correctamente, el mismo flujo crea un GitHub Release con notas generadas. La versión mostrada en Vessel se compila desde ese tag. `ci.yaml` verifica los tipos y compila en los pushes y pull requests dirigidos a `main` o `master`.
 
 Para compilar con el Compose del directorio Docker, ejecuta `docker compose -f docker/compose.yaml up -d --build` desde la raíz del repositorio. Configura `VESSEL_VERSION` en `.env` solo si quieres que una compilación local muestre una versión distinta a la de `package.json`.
 

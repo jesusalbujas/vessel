@@ -7,7 +7,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -24,6 +24,7 @@ jobs:
         run: |
           test -n "$DOCKERHUB_USERNAME" || { echo "::error::Add the DOCKERHUB_USERNAME GitHub Actions secret."; exit 1; }
           test -n "$DOCKERHUB_TOKEN" || { echo "::error::Add the DOCKERHUB_TOKEN GitHub Actions secret."; exit 1; }
+          test "$DOCKERHUB_USERNAME" = "jalbujas" || { echo "::error::DOCKERHUB_USERNAME must be jalbujas to publish jalbujas/vessel."; exit 1; }
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -41,7 +42,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/vessel
+          images: docker.io/jalbujas/vessel
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
@@ -61,3 +62,11 @@ jobs:
             VESSEL_VERSION=${{ steps.metadata.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release after image publication
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Vessel ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

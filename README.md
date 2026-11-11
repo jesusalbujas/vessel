@@ -137,7 +137,7 @@ The web port binds to `127.0.0.1` by default. To publish Vessel behind a trusted
 
 The maintained Dockerfile is `docker/Dockerfile`; `docker/compose.yaml` is also available for a self-contained Compose deployment. The root Compose files use the same Dockerfile.
 
-To publish to Docker Hub, add the repository Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, then push a version tag such as `v0.31.0`. The `publish.yaml` workflow builds `DOCKERHUB_USERNAME/vessel` for `linux/amd64` and `linux/arm64` and publishes the release tag, semantic-version tags, and `latest`. The version shown in Vessel is built from that release tag. `ci.yaml` typechecks and builds pushes and pull requests to `main` or `master`.
+To publish to Docker Hub, add the repository Actions secrets `DOCKERHUB_USERNAME` (`jalbujas`) and `DOCKERHUB_TOKEN` (a Docker Hub access token with permission to push), then push a version tag such as `v0.1.0`. The `publish.yaml` workflow builds `docker.io/jalbujas/vessel` for `linux/amd64` and `linux/arm64` and publishes the version tag, semantic-version tags, and `latest`. After the image push succeeds, the same workflow creates a GitHub Release with generated notes. The version shown in Vessel is built from that release tag. `ci.yaml` typechecks and builds pushes and pull requests to `main` or `master`.
 
 To build using the Compose file in the Docker directory, run `docker compose -f docker/compose.yaml up -d --build` from the repository root. Set `VESSEL_VERSION` in `.env` only when you want a local build to display a version different from `package.json`.
 
