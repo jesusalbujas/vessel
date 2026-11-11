@@ -121,6 +121,7 @@ Antes de exponer Vessel, reemplaza los valores de ejemplo en `.env`:
 
 - Asigna a `VESSEL_SECRET_KEY` un valor aleatorio privado de al menos 32 caracteres. Por ejemplo, genéralo con `openssl rand -hex 32` y pega el resultado en `.env`.
 - Configura una contraseña segura en `VESSEL_ADMIN_PASSWORD`, o utiliza la pantalla de creación del primer administrador si no configuraste credenciales de bootstrap.
+- Deja `VESSEL_COOKIE_SECURE` vacío si usas HTTPS. Solo en una red HTTP confiable y restringida, configúralo como `false`: Vessel seguirá en modo producción, pero el navegador enviará la cookie de sesión por HTTP.
 - Mantén `.env` privado y respaldado de forma segura. Si pierdes o cambias la clave, los valores cifrados que Vessel ya guardó no podrán recuperarse.
 
 Inicia Vessel:

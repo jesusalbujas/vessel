@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { authenticatedUser, listSessions, requestTokenFromRequest, revokeManagedSession, userHasPermission } from "@/lib/control-plane";
+import { secureCookiesEnabled } from "@/lib/secure-cookies";
 
 function privateJson(data: unknown, init?: ResponseInit) {
   const headers = new Headers(init?.headers);
@@ -29,6 +30,6 @@ export async function deleteSession(request: Request) {
   const revoked = revokeManagedSession(id, requestTokenFromRequest(request));
   if (!revoked) return privateJson({ error: "Session not found" }, { status: 404 });
   const response = privateJson({ ok: true, current: revoked.isCurrent });
-  if (revoked.isCurrent) response.cookies.set("vessel-token", "", { httpOnly: true, expires: new Date(0), path: "/", sameSite: "lax", secure: process.env.NODE_ENV === "production" });
+  if (revoked.isCurrent) response.cookies.set("vessel-token", "", { httpOnly: true, expires: new Date(0), path: "/", sameSite: "lax", secure: secureCookiesEnabled() });
   return response;
 }

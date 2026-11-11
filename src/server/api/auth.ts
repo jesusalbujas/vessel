@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { authenticate, createInitialAdmin, createSession, currentUser, ensureInitialAdmin, getPlatformSettings, passwordPolicy, requestTokenFromRequest, revokeSession, sessionLifetimeSeconds, updateUserEmail, userCount } from "@/lib/control-plane";
 import { clearLoginFailures, loginRetryAfterSeconds, recordLoginFailure } from "@/lib/login-rate-limit";
+import { secureCookiesEnabled } from "@/lib/secure-cookies";
 
 const token = requestTokenFromRequest;
 function privateJson(data: unknown, init?: ResponseInit) {
@@ -34,7 +35,7 @@ export async function postAuth(request: Request) {
     try {
       const user = createInitialAdmin(body.username ?? "", body.password ?? "");
       const session = createSession(user.id, null, request); const response = privateJson({ user, setupCompleted: true }, { status: 201 });
-      response.cookies.set("vessel-token", session, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: sessionLifetimeSeconds(), path: "/" }); return response;
+      response.cookies.set("vessel-token", session, { httpOnly: true, sameSite: "lax", secure: secureCookiesEnabled(), maxAge: sessionLifetimeSeconds(), path: "/" }); return response;
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to create administrator" }, { status: 400 });
     }
@@ -51,7 +52,7 @@ export async function postAuth(request: Request) {
   }
   clearLoginFailures(username);
   const session = createSession(user.id, null, request); const response = privateJson({ user });
-  response.cookies.set("vessel-token", session, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: sessionLifetimeSeconds(), path: "/" }); return response;
+  response.cookies.set("vessel-token", session, { httpOnly: true, sameSite: "lax", secure: secureCookiesEnabled(), maxAge: sessionLifetimeSeconds(), path: "/" }); return response;
 }
 export async function patchAuth(request: Request) {
   const user = currentUser(token(request));
@@ -65,4 +66,4 @@ export async function patchAuth(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to update profile" }, { status: 400 });
   }
 }
-export async function deleteAuth(request: Request) { const value = token(request); if (value) revokeSession(value); const response = privateJson({ ok: true }); response.cookies.set("vessel-token", "", { httpOnly: true, expires: new Date(0), path: "/", sameSite: "lax", secure: process.env.NODE_ENV === "production" }); return response; }
+export async function deleteAuth(request: Request) { const value = token(request); if (value) revokeSession(value); const response = privateJson({ ok: true }); response.cookies.set("vessel-token", "", { httpOnly: true, expires: new Date(0), path: "/", sameSite: "lax", secure: secureCookiesEnabled() }); return response; }

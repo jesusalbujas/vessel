@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { consumeOAuthState, createOAuthState, createSession, endSession, getOAuthConfiguration, getPlatformSettings, resolveOAuthUser, sessionLifetimeSeconds, userCount } from "@/lib/control-plane";
+import { secureCookiesEnabled } from "@/lib/secure-cookies";
 
 function pkceChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
@@ -30,7 +31,7 @@ export async function startOAuth(request: Request) {
   authorization.searchParams.set("code_challenge_method", "S256");
   if (config.oauthProvider === "microsoft" || config.oauthProvider === "google") authorization.searchParams.set("prompt", "select_account");
   const response = NextResponse.redirect(authorization);
-  response.cookies.set("vessel-oauth-state", state, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 600, path: "/api/auth/oauth" });
+  response.cookies.set("vessel-oauth-state", state, { httpOnly: true, sameSite: "lax", secure: secureCookiesEnabled(), maxAge: 600, path: "/api/auth/oauth" });
   return response;
 }
 
@@ -40,7 +41,7 @@ function cookieValue(request: Request, name: string): string | null {
 }
 
 function clearOAuthState(response: NextResponse): NextResponse {
-  response.cookies.set("vessel-oauth-state", "", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", expires: new Date(0), path: "/api/auth/oauth" });
+  response.cookies.set("vessel-oauth-state", "", { httpOnly: true, sameSite: "lax", secure: secureCookiesEnabled(), expires: new Date(0), path: "/api/auth/oauth" });
   return response;
 }
 
@@ -132,7 +133,7 @@ export async function callbackOAuth(request: Request) {
     const user = resolveOAuthUser({ provider: config.oauthProvider, subject: identity.subject, email: identity.email, emailVerified: identity.emailVerified, username: identity.username, autoProvision: config.oauthAutoProvision });
     const session = createSession(user.id, tokens.idToken, request);
     const response = NextResponse.redirect(new URL("/", fallbackBase));
-    response.cookies.set("vessel-token", session, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: sessionLifetimeSeconds(), path: "/" });
+    response.cookies.set("vessel-token", session, { httpOnly: true, sameSite: "lax", secure: secureCookiesEnabled(), maxAge: sessionLifetimeSeconds(), path: "/" });
     return clearOAuthState(response);
   } catch {
     return clearOAuthState(loginRedirect(fallbackBase, "failed"));
@@ -157,6 +158,6 @@ export async function logoutOAuth(request: Request) {
   const response = destination
     ? NextResponse.redirect(destination)
     : new NextResponse(null, { status: 303, headers: { Location: "/login" } });
-  response.cookies.set("vessel-token", "", { httpOnly: true, expires: new Date(0), path: "/", sameSite: "lax", secure: process.env.NODE_ENV === "production" });
+  response.cookies.set("vessel-token", "", { httpOnly: true, expires: new Date(0), path: "/", sameSite: "lax", secure: secureCookiesEnabled() });
   return response;
 }
