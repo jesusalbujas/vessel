@@ -1120,6 +1120,17 @@ footer { display: flex; justify-content: space-between; gap: 12px; border-top: 1
 @media (max-width: 520px) { .overview-heading { align-items: start; flex-direction: column; }.overview-resource-grid { grid-template-columns: 1fr 1fr; }.overview-resource { min-height: 130px; padding: 14px; }.overview-health-grid { padding: 14px; }.overview-health-grid > div { padding: 3px 10px; }.overview-health-grid strong { font-size: 20px; }.login-layout .login-panel { padding: 32px 24px; } }
 @media (prefers-reduced-motion: reduce) { .app-page-transition, .login-layout .login-panel, .spinning { animation: none !important; transition: none !important; } }
 
+.login-layout .login-stage { position: relative; }
+.login-layout .login-language-row { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin: -16px 0 20px; color: var(--muted); }
+.login-layout .login-language-row > svg { flex: 0 0 auto; color: var(--accent-strong); }
+.login-layout .login-language-select { width: 76px; }
+.login-layout .login-language-select .vessel-select-trigger { min-height: 30px; padding: 4px 7px 4px 9px; border-radius: 8px; background: var(--surface-raised); color: var(--ink); font-size: 11px; font-weight: 700; }
+.login-layout .login-language-select .vessel-select-trigger:hover { border-color: var(--accent); background: var(--surface-soft); }
+.login-layout .login-language-select .vessel-select-menu-portal { border-radius: 10px; box-shadow: 0 12px 32px rgba(20, 32, 70, .18); }
+[data-theme="dark"] .login-layout .login-language-select .vessel-select-trigger { border-color: #34415b; background: #182236; color: #e5eaf5; }
+[data-theme="dark"] .login-layout .login-language-select .vessel-select-trigger:hover { border-color: #6575db; background: #202d45; }
+@media (max-width: 520px) { .login-layout .login-language-row { margin-top: -12px; } }
+
 /* Registry credentials: provider-aware forms and connection inventory. */
 .registries-page { display: grid; gap: 18px; }
 .registries-page .module-header { align-items: center; margin-bottom: 2px; }
@@ -4161,3 +4172,15 @@ body:has(.modal-backdrop) .vessel-run-tab-transition { transform: none !importan
 :root[data-theme="dark"] .container-files-state.is-running{background:#163c2b;color:#96e1b6}:root[data-theme="dark"] .container-files-state.is-stopped{background:#472526;color:#ffaaa5}
 :root[data-theme="dark"] .container-files-entry-open span{background:#252d53;color:#c3cbff}:root[data-theme="dark"] .container-files-error>span{background:#472526;color:#ffaaa5}
 @media(max-width:760px){.container-files-workspace{grid-template-columns:1fr;gap:10px}.container-files-transfer-mark{flex-direction:row;height:30px;transform:none}.container-files-transfer-mark>svg{padding:7px}.container-files-transfer-mark>span{display:none}.container-files-modal{gap:0}.container-files-pane>header.container-files-pane-heading{min-height:62px}}
+
+/* Compact language picker anchored to the login card corner. */
+.login-layout .login-panel { position: relative; }
+.login-layout .login-language-row { position: absolute; top: 12px; right: 14px; z-index: 2; gap: 0; margin: 0; }
+.login-layout .login-language-row > svg { display: none; }
+.login-layout .login-language-select { width: 62px; }
+.login-layout .login-language-select .vessel-select-trigger { min-height: 27px; padding: 3px 5px 3px 8px; border-radius: 7px; font-size: 10px; }
+.login-layout .login-language-select .vessel-select-trigger > svg { width: 13px; height: 13px; }
+.login-layout .login-language-select { width: 78px; }
+.login-layout .login-language-select .vessel-select-trigger { gap: 6px; padding-left: 9px; padding-right: 6px; font-size: 11px; }
+.login-layout .login-language-select .vessel-select-value { display: block; flex: 1 1 auto; min-width: 24px; overflow: visible; text-overflow: clip; }
+.login-layout .login-language-select .vessel-select-menu-portal { min-width: 78px; }

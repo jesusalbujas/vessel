@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 export type Language = "es" | "en";
+const LANGUAGE_STORAGE_KEY = "vessel-language-v2";
 
 const messages = {
   es: {
@@ -90,14 +91,13 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [languageReady, setLanguageReady] = useState(false);
   useEffect(() => {
     let saved: Language | null = null;
-    try { saved = window.localStorage.getItem("vessel-language") as Language | null; } catch { /* Keep the browser language when storage is unavailable. */ }
-    const browser = window.navigator.language.toLowerCase().startsWith("es") ? "es" : "en";
-    setLanguageState(saved === "es" || saved === "en" ? saved : browser);
+    try { saved = window.localStorage.getItem(LANGUAGE_STORAGE_KEY) as Language | null; } catch { /* Keep English when storage is unavailable. */ }
+    setLanguageState(saved === "es" || saved === "en" ? saved : "en");
     setLanguageReady(true);
   }, []);
   useEffect(() => {
     if (!languageReady) return;
-    window.localStorage.setItem("vessel-language", language);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
     document.documentElement.lang = language;
   }, [language, languageReady]);
   const value = useMemo(() => ({ language, languageReady, setLanguage: (next: Language) => setLanguageState(next), t: (key: TranslationKey) => messages[language][key] }), [language, languageReady]);
