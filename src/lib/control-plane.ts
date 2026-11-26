@@ -139,6 +139,12 @@ function db(): DatabaseSync {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (project_id, variable_name)
     );
+    CREATE TABLE IF NOT EXISTS vessel_project_service_environment (
+      service_id TEXT NOT NULL REFERENCES vessel_project_services(id) ON DELETE CASCADE,
+      variable_name TEXT NOT NULL, encrypted_value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (service_id, variable_name)
+    );
     CREATE TABLE IF NOT EXISTS vessel_project_schedules (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES vessel_projects(id) ON DELETE CASCADE,
       service_id TEXT NOT NULL REFERENCES vessel_project_services(id) ON DELETE CASCADE,
@@ -1658,6 +1664,47 @@ export function setVesselProjectEnvironmentVariable(projectId: string, name: str
 export function deleteVesselProjectEnvironmentVariable(projectId: string, name: string): boolean {
   const result = db().prepare("DELETE FROM vessel_project_environment WHERE project_id = ? AND variable_name = ?").run(projectId, name);
   if (Number(result.changes)) db().prepare("UPDATE vessel_projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
+  return Number(result.changes) > 0;
+}
+
+export function listVesselProjectServiceEnvironmentNames(serviceId: string): string[] {
+  return (db().prepare(`SELECT variable_name AS name FROM vessel_project_service_environment
+    WHERE service_id = ? ORDER BY variable_name COLLATE NOCASE`).all(serviceId) as Array<{ name: string }>).map((row) => row.name);
+}
+
+export function getVesselProjectServiceEnvironment(serviceId: string): Record<string, string> {
+  const rows = db().prepare(`SELECT variable_name AS name, encrypted_value AS value
+    FROM vessel_project_service_environment WHERE service_id = ?`).all(serviceId) as Array<{ name: string; value: string }>;
+  return Object.fromEntries(rows.map((row) => [row.name, decrypt(row.value)]));
+}
+
+export function setVesselProjectServiceEnvironmentVariable(serviceId: string, name: string, value: string) {
+  if (!secretStorageReady()) throw new Error("Configura una clave VESSEL_SECRET_KEY segura de al menos 32 caracteres antes de guardar variables");
+  db().prepare(`INSERT INTO vessel_project_service_environment (service_id, variable_name, encrypted_value)
+    VALUES (?, ?, ?) ON CONFLICT(service_id, variable_name) DO UPDATE SET
+    encrypted_value = excluded.encrypted_value, updated_at = CURRENT_TIMESTAMP`)
+    .run(serviceId, name, encrypt(value));
+}
+
+export function setVesselProjectServiceEnvironmentVariables(serviceId: string, entries: Array<{ name: string; value: string }>) {
+  if (!secretStorageReady()) throw new Error("Configura una clave VESSEL_SECRET_KEY segura de al menos 32 caracteres antes de guardar variables");
+  const encrypted = entries.map(({ name, value }) => ({ name, value: encrypt(value) }));
+  const table = db();
+  table.exec("BEGIN IMMEDIATE");
+  try {
+    const upsert = table.prepare(`INSERT INTO vessel_project_service_environment (service_id, variable_name, encrypted_value)
+      VALUES (?, ?, ?) ON CONFLICT(service_id, variable_name) DO UPDATE SET
+      encrypted_value = excluded.encrypted_value, updated_at = CURRENT_TIMESTAMP`);
+    for (const item of encrypted) upsert.run(serviceId, item.name, item.value);
+    table.exec("COMMIT");
+  } catch (error) {
+    table.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function deleteVesselProjectServiceEnvironmentVariable(serviceId: string, name: string): boolean {
+  const result = db().prepare("DELETE FROM vessel_project_service_environment WHERE service_id = ? AND variable_name = ?").run(serviceId, name);
   return Number(result.changes) > 0;
 }
 

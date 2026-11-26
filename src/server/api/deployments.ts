@@ -11,6 +11,7 @@ import {
   gitSourceById,
   gitSourceRuntimeData,
   gitSourceSecretNames,
+  getVesselProjectServiceEnvironment,
   listGitDeployments,
   listGitProviders,
   listGitSources,
@@ -180,6 +181,9 @@ export async function postDeployments(request: Request) {
         if (!source) return privateJson({ error: "Git source not found" }, { status: 404 });
       } else {
         source = createGitSource(input);
+      }
+      for (const [name, value] of Object.entries(getVesselProjectServiceEnvironment(service.id))) {
+        setGitSourceSecret(source.id, name, value);
       }
       const updatedService = addVesselProjectService({ projectId, kind: "application", name: service.name, appName: service.appName, description: service.description, targetType: "git", targetRef: source.id });
       return privateJson({ data: { service: updatedService, source: { ...source, secrets: gitSourceSecretNames(source.id) } } }, { status: 200 });

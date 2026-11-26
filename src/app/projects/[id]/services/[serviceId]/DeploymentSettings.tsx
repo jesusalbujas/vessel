@@ -15,7 +15,7 @@ type Provider = { id: string; provider: GitProviderBrand; name: string; accountN
 type Repository = { repository: string; fullName: string; private: boolean; defaultBranch: string };
 type Inspection = { branches: string[]; composeFiles: string[]; defaultBranch: string; treeTruncated: boolean };
 type ServiceSchedule = { id: string; serviceId: string; action: "restart" | "start" | "down" | "down_up"; startsAt: string; timezone: string; repeatMode: "once" | "daily" | "weekly"; weekdays: number[]; months: number[]; endsAt: string | null; enabled: boolean; lastRunStatus: "scheduled" | "running" | "succeeded" | "failed"; lastError: string | null };
-export type ApplicationGitSource = { id: string; name: string; repository: string; providerId: string | null; providerType: GitProviderBrand | null; providerName: string | null; branch: string; composePath: string; autoDeploy: boolean; triggerType: "push" | "tag" | "release" | "manual"; pollIntervalSeconds: number; watchPaths: string[]; enableSubmodules: boolean; lastStatus: string };
+export type ApplicationGitSource = { id: string; name: string; repository: string; providerId: string | null; providerType: GitProviderBrand | null; providerName: string | null; branch: string; composePath: string; autoDeploy: boolean; triggerType: "push" | "tag" | "release" | "manual"; pollIntervalSeconds: number; watchPaths: string[]; enableSubmodules: boolean; lastStatus: string; secrets?: string[] };
 
 const providerNames: Record<GitProviderBrand, { es: string; en: string }> = {
   github: { es: "GitHub", en: "GitHub" },

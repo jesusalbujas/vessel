@@ -2,9 +2,9 @@
 import VesselSelect from "@/app/components/VesselSelect";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, ArrowUpRight, Ban, Boxes, Check, ChevronDown, CircleAlert, Clock3, Container, Copy, Database, Eraser, FileCode2, GitBranch, Globe, Image as ImageIcon, ListRestart, Network, RefreshCw, Scissors, ScrollText, ShieldCheck, Bot, Trash2, Webhook, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ArrowUpRight, Ban, Boxes, Check, ChevronDown, CircleAlert, Clock3, Container, Copy, ClipboardPaste, Database, Eraser, Eye, EyeOff, FileCode2, GitBranch, Globe, Image as ImageIcon, KeyRound, ListRestart, LockKeyhole, Network, Plus, RefreshCw, Scissors, ScrollText, ShieldCheck, Bot, Trash2, Webhook, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { localizeProjectError } from "@/lib/project-errors";
 import { notifyVessel } from "@/app/components/ToastNotice";
@@ -18,7 +18,7 @@ type AIAvailableConfig = { id: string; name: string; model: string; provider: st
 type DeploymentAction = "clear_history" | "kill_build" | "cancel_queue";
 type ServiceData = { id: string; name: string; appName: string; description: string; kind: string; targetType: string | null; targetRef: string | null };
 type GitProvider = { id: string; provider: "github" | "gitlab" | "bitbucket" | "gitea"; name: string; accountName: string | null };
-type Payload = { project: { id: string; name: string }; service: ServiceData; resources: Runtime[]; deployments: Run[]; gitSource: (ApplicationGitSource & { webhookReady: boolean }) | null; providers: GitProvider[] };
+type Payload = { project: { id: string; name: string }; service: ServiceData; resources: Runtime[]; deployments: Run[]; gitSource: (ApplicationGitSource & { webhookReady: boolean }) | null; providers: GitProvider[]; environmentSecrets: string[] };
 type Tab = "general" | "environment" | "deployments" | "containers" | "logs";
 
 const tabIcons = { general: FileCode2, environment: ShieldCheck, deployments: GitBranch, containers: Container, logs: ScrollText };
@@ -71,6 +71,14 @@ export default function ProjectServicePage() {
   const [pendingDeploymentAction, setPendingDeploymentAction] = useState<DeploymentAction | null>(null);
   const [deploymentActionBusy, setDeploymentActionBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [environmentName, setEnvironmentName] = useState("");
+  const [environmentValue, setEnvironmentValue] = useState("");
+  const [environmentMode, setEnvironmentMode] = useState<"fields" | "paste">("fields");
+  const [environmentText, setEnvironmentText] = useState("");
+  const [environmentBusy, setEnvironmentBusy] = useState(false);
+  const [environmentError, setEnvironmentError] = useState("");
+  const [showEnvironmentValue, setShowEnvironmentValue] = useState(false);
+  const [environmentDeleteName, setEnvironmentDeleteName] = useState<string | null>(null);
   const deploymentStatuses = useRef<Map<string, string> | null>(null);
   const gitSourceStatus = useRef<string | null>(null);
   const pendingManualDeploymentNotice = useRef(false);
@@ -264,6 +272,91 @@ export default function ProjectServicePage() {
     finally { setBusy(false); }
   }
 
+  async function saveEnvironmentVariable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (data?.service.kind !== "application" || environmentBusy) return;
+    let entries: Array<{ name: string; value: string }> = [];
+    if (environmentMode === "paste") {
+      const seen = new Set<string>();
+      const lines = environmentText.split("\n");
+      for (let index = 0; index < lines.length; index += 1) {
+        let line = lines[index].replace(/\r$/, "");
+        if (!line.trim() || line.trimStart().startsWith("#")) continue;
+        line = line.trimStart().replace(/^export\s+/, "");
+        const separator = line.indexOf("=");
+        if (separator < 1) {
+          setEnvironmentError(es ? `Línea ${index + 1}: usa el formato CLAVE=valor.` : `Line ${index + 1}: use KEY=value format.`);
+          return;
+        }
+        const name = line.slice(0, separator).trim();
+        const value = line.slice(separator + 1).trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
+          setEnvironmentError(es ? `Línea ${index + 1}: “${name}” no es un nombre válido.` : `Line ${index + 1}: “${name}” is not a valid variable name.`);
+          return;
+        }
+        if (seen.has(name)) {
+          setEnvironmentError(es ? `La variable ${name} aparece más de una vez.` : `Variable ${name} appears more than once.`);
+          return;
+        }
+        seen.add(name);
+        entries.push({ name, value });
+      }
+      if (!entries.length) {
+        setEnvironmentError(es ? "Pega al menos una variable en formato CLAVE=valor." : "Paste at least one variable in KEY=value format.");
+        return;
+      }
+      if (entries.length > 100) {
+        setEnvironmentError(es ? "Puedes guardar hasta 100 variables por lote." : "You can save up to 100 variables per batch.");
+        return;
+      }
+    } else {
+      entries = [{ name: environmentName.trim(), value: environmentValue }];
+    }
+    setEnvironmentBusy(true);
+    setEnvironmentError("");
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: environmentMode === "paste"
+          ? JSON.stringify({ action: "set_service_environment_bulk", projectId, serviceId, entries })
+          : JSON.stringify({ action: "set_service_environment", projectId, serviceId, ...entries[0] }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(localizeProjectError(payload.error ?? "Could not save environment variable.", language));
+      setData((current) => current ? { ...current, environmentSecrets: payload.environmentSecrets as string[] } : current);
+      setEnvironmentName("");
+      setEnvironmentValue("");
+      setEnvironmentText("");
+      setShowEnvironmentValue(false);
+      notifyVessel({ kind: "success", title: es ? (entries.length === 1 ? "Variable guardada" : "Variables guardadas") : (entries.length === 1 ? "Variable saved" : "Variables saved"), detail: es ? `${entries.length} ${entries.length === 1 ? "variable cifrada" : "variables cifradas"}; se aplicarán en el próximo despliegue.` : `${entries.length} encrypted ${entries.length === 1 ? "variable" : "variables"}; they will apply on the next deployment.` });
+    } catch (cause) {
+      setEnvironmentError(cause instanceof Error ? cause.message : es ? "No se pudo guardar la variable." : "Could not save the variable.");
+    } finally { setEnvironmentBusy(false); }
+  }
+
+  async function deleteEnvironmentVariable() {
+    const name = environmentDeleteName;
+    if (data?.service.kind !== "application" || !name || environmentBusy) return;
+    setEnvironmentBusy(true);
+    setEnvironmentError("");
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "delete_service_environment", projectId, serviceId, name }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(localizeProjectError(payload.error ?? "Could not delete environment variable.", language));
+      setData((current) => current ? { ...current, environmentSecrets: payload.environmentSecrets as string[] } : current);
+      setEnvironmentDeleteName(null);
+      notifyVessel({ kind: "success", title: es ? "Variable eliminada" : "Variable deleted", detail: es ? "Se quitará del contenedor en el próximo despliegue." : "It will be removed from the container on the next deployment." });
+    } catch (cause) {
+      setEnvironmentError(cause instanceof Error ? cause.message : es ? "No se pudo eliminar la variable." : "Could not delete the variable.");
+      setEnvironmentDeleteName(null);
+    } finally { setEnvironmentBusy(false); }
+  }
+
   const selected = data?.resources.find((item) => item.serviceId === selectedContainer) ?? data?.resources[0] ?? null;
   const logicalApplication = data?.service.kind === "application";
   const sourceLink = data?.service.targetType === "compose" && data.service.targetRef ? `/compose?project=${encodeURIComponent(data.service.targetRef)}` : data?.service.targetType === "git" ? "/deployments" : "/containers";
@@ -327,7 +420,29 @@ export default function ProjectServicePage() {
     <div key={tab} className="service-detail-tab-content" role="tabpanel">
     {tab === "general" ? <>{logicalApplication ? <DeploymentSettings projectId={projectId} serviceId={serviceId} appName={data.service.appName} providers={data.providers} source={data.gitSource} es={es} hasContainers={data.resources.length > 0} hasRunningContainers={data.resources.some((resource) => resource.status === "running" || resource.status === "unhealthy")} onOpenLogs={() => { setTab("logs"); if (selectedContainer) void loadLogs(); }} onSaved={(source) => setData((current) => current ? { ...current, service: { ...current.service, targetType: "git", targetRef: source.id }, gitSource: { ...source, webhookReady: current.gitSource?.webhookReady ?? false } } : current)} onDeploy={deployApplication} /> : null}{!logicalApplication ? <section className="service-detail-panel"><div className="service-detail-section-heading"><div><span className="module-kicker">{es ? "ESTADO DEL SERVICIO" : "SERVICE STATUS"}</span><h2>{es ? "General" : "General"}</h2></div><span className={`project-resource-state${data.resources.length ? " is-linked" : ""}`}><i />{data.resources.length ? es ? "Recurso conectado" : "Resource connected" : data.gitSource?.lastStatus === "failed" ? es ? "Despliegue fallido" : "Deployment failed" : data.gitSource?.lastStatus === "deploying" ? es ? "Desplegando" : "Deploying" : es ? "Sin despliegue" : "Not deployed"}</span></div>{data.gitSource ? <div className="service-detail-summary service-git-summary"><GitBranch size={19} /><div><strong>{data.gitSource.repository}</strong><span>{data.gitSource.branch} · {data.gitSource.composePath}</span></div><span className="service-state-pill">{deploymentStatusLabel(data.gitSource.lastStatus)}</span></div> : null}<div className="service-detail-metrics">{detailMetrics.map((item) => <div className="service-detail-metric" key={item.label}><small>{item.label}</small><strong title={item.value}>{item.value}</strong></div>)}</div><div className="service-detail-resource-list">{data.resources.length ? data.resources.map((resource) => <div key={resource.id}><span className={`service-state-dot ${resource.status}`} /><div><strong>{resource.name}</strong><small>{resource.image}</small></div><span className="service-detail-status">{resource.statusText || resource.status}</span></div>) : <p className="empty-state">{data.service.kind === "application" ? data.gitSource?.lastStatus === "failed" ? es ? "No se crearon recursos. Revisa el detalle del intento en Despliegues." : "No resources were created. Review the attempt details under Deployments." : es ? "Los recursos desplegados aparecerán aquí después del primer despliegue." : "Deployed resources will appear here after the first deployment." : es ? "Todavía no hay contenedores desplegados para este servicio." : "No containers have been deployed for this service yet."}</p>}</div></section> : null}</> : null}
 
-    {tab === "environment" ? <section className="service-detail-panel"><div className="service-detail-section-heading"><div><span className="module-kicker">{es ? "CONFIGURACIÓN" : "CONFIGURATION"}</span><h2>{es ? "Variables de entorno" : "Environment variables"}</h2></div><ShieldCheck size={19} /></div>{selected?.environmentNames.length ? <><p className="service-detail-note"><ShieldCheck size={15} />{es ? "Se muestran nombres de variables. Los valores se ocultan para proteger credenciales." : "Variable names are shown. Values stay hidden to protect credentials."}</p><div className="service-env-list">{selected.environmentNames.map((name) => <code key={name}>{name}<span>{es ? "Configurada" : "Set"}</span></code>)}</div></> : <div className="service-tab-empty">{es ? "No hay variables disponibles para este recurso." : "No environment variables are available for this resource."}</div>}</section> : null}
+    {tab === "environment" ? <section className="service-detail-panel service-environment-panel">
+      <div className="service-detail-section-heading"><div><span className="module-kicker">{es ? "CONFIGURACIÓN" : "CONFIGURATION"}</span><h2>{es ? "Variables de entorno" : "Environment variables"}</h2><p>{es ? "Define valores que Compose podrá usar al desplegar este servicio." : "Define values that Compose can use when deploying this service."}</p></div><ShieldCheck size={19} /></div>
+      {data.service.kind === "application" ? <>
+        <div className="service-environment-security-note"><LockKeyhole size={16} /><span>{data.gitSource
+          ? es ? "Vessel cifra estos valores y los aplica en el próximo despliegue. Puedes referenciarlos desde Compose como ${NOMBRE}."
+            : "Vessel encrypts these values and applies them on the next deployment. Reference them in Compose as ${NAME}."
+          : es ? "Vessel cifra estos valores. Al configurar una fuente Git para la aplicación, estarán disponibles para el despliegue como variables de Compose (${NOMBRE})."
+            : "Vessel encrypts these values. When you connect a Git source, they will be available to the deployment as Compose variables (${NAME})."}</span></div>
+        <form className="service-environment-form" onSubmit={(event) => void saveEnvironmentVariable(event)} aria-labelledby="service-environment-form-title">
+          <div className="service-environment-form-heading"><h3 id="service-environment-form-title">{es ? "Añadir o actualizar variables" : "Add or update variables"}</h3><div className="service-environment-input-mode" role="tablist" aria-label={es ? "Modo de entrada" : "Input mode"}><button type="button" role="tab" aria-selected={environmentMode === "fields"} className={environmentMode === "fields" ? "is-active" : ""} onClick={() => { setEnvironmentMode("fields"); setEnvironmentError(""); }}><Plus size={14} />{es ? "Una variable" : "Single variable"}</button><button type="button" role="tab" aria-selected={environmentMode === "paste"} className={environmentMode === "paste" ? "is-active" : ""} onClick={() => { setEnvironmentMode("paste"); setEnvironmentError(""); }}><ClipboardPaste size={14} />{es ? "Pegar texto" : "Paste text"}</button></div></div>
+          {environmentMode === "fields" ? <div className="service-environment-form-fields">
+            <label><span>{es ? "Nombre de variable" : "Variable name"}</span><input name="environment-name" value={environmentName} onChange={(event) => setEnvironmentName(event.target.value)} placeholder="DATABASE_URL" autoCapitalize="none" autoCorrect="off" spellCheck={false} pattern="[A-Za-z_][A-Za-z0-9_]{0,127}" maxLength={128} required aria-describedby="service-environment-name-help" /><small id="service-environment-name-help">{es ? "Letras, números y guion bajo; debe comenzar con letra o _." : "Letters, numbers, and underscores; must start with a letter or _."}</small></label>
+            <label className="service-environment-value-field"><span>{es ? "Valor" : "Value"}</span><div><input name="environment-value" type={showEnvironmentValue ? "text" : "password"} value={environmentValue} onChange={(event) => setEnvironmentValue(event.target.value)} autoComplete="new-password" maxLength={32768} required /><button type="button" onClick={() => setShowEnvironmentValue((visible) => !visible)} aria-label={showEnvironmentValue ? (es ? "Ocultar valor" : "Hide value") : (es ? "Mostrar valor" : "Show value")} aria-pressed={showEnvironmentValue}>{showEnvironmentValue ? <EyeOff size={16} /> : <Eye size={16} />}</button></div><small>{es ? "Al guardar, el valor no volverá a mostrarse. Para cambiarlo, guarda de nuevo el mismo nombre." : "After saving, the value will not be shown again. To change it, save the same name again."}</small></label>
+          </div> : <label className="service-environment-paste-field"><span>{es ? "Variables · una por línea" : "Variables · one per line"}</span><textarea name="environment-text" value={environmentText} onChange={(event) => setEnvironmentText(event.target.value)} placeholder={"DATABASE_URL=postgres://usuario:clave@host/bd\nAPP_MODE=production"} rows={6} required spellCheck={false} autoCapitalize="none" autoCorrect="off" aria-describedby="service-environment-paste-help" /><small id="service-environment-paste-help">{es ? "Formato CLAVE=valor. Se permiten comentarios con # y líneas vacías; el valor puede contener =." : "KEY=value format. Comments starting with # and blank lines are ignored; values may contain =."}</small></label>}
+          <div className="service-environment-form-footer"><span><LockKeyhole size={14} />{es ? "Cifrado en Vessel" : "Encrypted by Vessel"}</span><button className="projects-primary" type="submit" disabled={environmentBusy || (environmentMode === "fields" ? !environmentName.trim() || !environmentValue : !environmentText.trim())}>{environmentBusy ? <span className="spinner" /> : environmentMode === "paste" ? <ClipboardPaste size={15} /> : <Plus size={15} />}{environmentMode === "paste" ? es ? "Guardar variables" : "Save variables" : es ? "Guardar variable" : "Save variable"}</button></div>
+        </form>
+        {environmentError ? <div className="projects-notice is-error" role="alert">{environmentError}</div> : null}
+        <section className="service-environment-section"><div className="service-environment-section-title"><div><KeyRound size={16} /><h3>{es ? "Variables definidas en Vessel" : "Variables stored in Vessel"}</h3></div><span>{data.environmentSecrets.length}</span></div>
+          {data.environmentSecrets.length ? <div className="service-env-list">{data.environmentSecrets.map((name) => <div className="service-env-secret-row" key={name}><code>{name}</code><span><LockKeyhole size={13} />{es ? "Cifrada" : "Encrypted"}</span><button type="button" className="service-env-delete" onClick={() => setEnvironmentDeleteName(name)} aria-label={es ? `Eliminar ${name}` : `Delete ${name}`} data-tooltip={es ? "Eliminar variable de Vessel. Se quitará del próximo despliegue." : "Delete this Vessel variable. It will be removed from the next deployment."}><Trash2 size={15} /></button></div>)}</div> : <div className="service-tab-empty service-environment-empty"><KeyRound size={20} /><strong>{es ? "Aún no hay variables definidas" : "No variables defined yet"}</strong><span>{es ? "Añade una arriba; sus valores se guardarán cifrados y no aparecerán en la API." : "Add one above; values are stored encrypted and are never returned by the API."}</span></div>}
+        </section>
+        {data.resources.length ? <section className="service-environment-section"><div className="service-environment-section-title"><div><Container size={16} /><h3>{es ? "Variables presentes en contenedores" : "Variables present in containers"}</h3></div></div><p className="service-detail-note"><ShieldCheck size={15} />{es ? "Solo se muestran nombres; los valores actuales del contenedor permanecen ocultos." : "Only names are shown; current container values remain hidden."}</p><div className="service-env-list">{[...new Set(data.resources.flatMap((resource) => resource.environmentNames))].map((name) => <code key={name}>{name}<span>{es ? "En contenedor" : "In container"}</span></code>)}</div></section> : null}
+      </> : <div className="service-tab-empty"><KeyRound size={21} /><strong>{es ? "Variables no editables desde este servicio" : "Variables are managed elsewhere"}</strong><span>{es ? "Este recurso no es una aplicación administrada por Vessel. Edita su configuración desde el contenedor o el proyecto Compose asociado." : "This resource is not a Vessel-managed application. Edit its configuration from the associated container or Compose project."}</span><Link className="projects-secondary" href={sourceLink}>{es ? "Abrir configuración" : "Open configuration"}<ArrowUpRight size={15} /></Link></div>}
+    </section> : null}
 
     {tab === "deployments" ? <section className="service-detail-panel service-deployments-panel">
       <div className="service-detail-section-heading"><div><span className="module-kicker">GIT · COMPOSE</span><h2>{es ? "Despliegues" : "Deployments"}</h2><p>{es ? "Consulta las últimas 10 ejecuciones y sus logs." : "Review the latest 10 runs and their logs."}</p></div><div className="service-deployment-toolbar"><button className="projects-secondary service-deployments-refresh" type="button" onClick={() => void load(true)} data-tooltip={es ? "Actualiza el estado y el historial de despliegues." : "Refresh deployment status and history."}><RefreshCw size={15} />{es ? "Actualizar" : "Refresh"}</button>{data.gitSource ? <><button className="projects-secondary service-deployment-action" type="button" onClick={() => setPendingDeploymentAction("clear_history")} disabled={!data.deployments.some((run) => !["queued", "running"].includes(run.status))} data-tooltip={es ? "Elimina del historial las ejecuciones que ya terminaron." : "Remove completed runs from deployment history."}><Eraser size={15} />{es ? "Limpiar historial" : "Clear deployments"}</button><button className="projects-secondary service-deployment-action" type="button" onClick={() => setPendingDeploymentAction("kill_build")} disabled={!activeBuild} data-tooltip={es ? "Interrumpe la compilación que está ejecutándose." : "Interrupt the build that is currently running."}><Scissors size={15} />{es ? "Detener compilación" : "Kill Build"}</button><button className="projects-secondary service-deployment-action is-danger" type="button" onClick={() => setPendingDeploymentAction("cancel_queue")} disabled={!queuedDeploymentCount} data-tooltip={es ? "Cancela los despliegues pendientes en la cola." : "Cancel deployments waiting in the queue."}><Ban size={15} />{es ? "Cancelar cola" : "Cancel Queues"}{queuedDeploymentCount ? <span>{queuedDeploymentCount}</span> : null}</button></> : null}</div></div>
@@ -361,6 +476,7 @@ export default function ProjectServicePage() {
       <div className="service-deployment-log-lines" aria-live="polite">{activeDeploymentLogLines.map((line, index) => <div className={`service-deployment-log-line ${/error|failed|denied|fatal/i.test(line) ? "is-error" : "is-info"}`} key={`${index}-${line}`}><span>{/error|failed|denied|fatal/i.test(line) ? (es ? "error" : "error") : "info"}</span><code>{line}</code></div>)}</div>
       {aiPanelOpen ? <section className="deployment-ai-panel"><header><div><span className="ai-section-icon"><Bot size={17} /></span><div><h3>{es ? "Análisis de logs" : "Log analysis"}</h3><p>{es ? "El proveedor recibirá los logs de esta ejecución para proponer una causa y próximos pasos." : "The provider will receive this run's logs to suggest a cause and next steps."}</p></div></div></header>{aiConfigs.length ? <div className="deployment-ai-controls"><label>{es ? "Configuración de IA" : "AI configuration"}<VesselSelect value={aiConfigId} onChange={(event) => setAIConfigId(event.target.value)}>{aiConfigs.map((config) => <option key={config.id} value={config.id}>{config.name} · {config.model}</option>)}</VesselSelect></label><button className="primary-button ai-compact-button" type="button" onClick={() => void analyzeDeploymentLogs()} disabled={aiLoading || !aiConfigId || !activeDeploymentLogText.trim()}>{aiLoading ? <span className="spinner" /> : <Bot size={15} />}{aiLoading ? (es ? "Analizando…" : "Analyzing…") : (es ? "Analizar" : "Analyze")}</button></div> : <div className="deployment-ai-empty"><Bot size={17} /><span>{es ? "No hay proveedores de IA configurados. Añade una configuración para analizar logs." : "No AI providers configured. Set up a provider to analyze logs."}</span><Link href="/settings/ai">{es ? "Configurar proveedor de IA" : "Configure AI Provider"}<ArrowUpRight size={14} /></Link></div>}{aiError ? <div className="ai-feedback is-error"><CircleAlert size={15} />{aiError}</div> : null}{aiAnalysis ? <pre className="deployment-ai-result">{aiAnalysis}</pre> : null}</section> : null}
     </section></div>}
+    {environmentDeleteName ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !environmentBusy) setEnvironmentDeleteName(null); }}><section className="confirm-modal project-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-environment-title"><span className="module-kicker">{es ? "VARIABLE DE ENTORNO" : "ENVIRONMENT VARIABLE"}</span><h2 id="delete-environment-title">{es ? `¿Eliminar ${environmentDeleteName}?` : `Delete ${environmentDeleteName}?`}</h2><p>{es ? "La variable cifrada se quitará de Vessel. El contenedor en ejecución conservará su entorno actual hasta el próximo despliegue." : "The encrypted variable will be removed from Vessel. The running container keeps its current environment until the next deployment."}</p><div className="modal-actions"><button type="button" onClick={() => setEnvironmentDeleteName(null)} disabled={environmentBusy}>{es ? "Cancelar" : "Cancel"}</button><button className="danger-button" type="button" onClick={() => void deleteEnvironmentVariable()} disabled={environmentBusy}>{environmentBusy ? <span className="spinner" /> : <Trash2 size={15} />}{es ? "Eliminar variable" : "Delete variable"}</button></div></section></div> : null}
     {deploymentActionDialog && <div className="modal-backdrop" role="presentation"><section className="confirm-modal project-confirm-modal" role="alertdialog" aria-modal="true"><span className="module-kicker">{es ? "ACCIONES DE DESPLIEGUE" : "DEPLOYMENT ACTIONS"}</span><h2>{deploymentActionDialog.title}</h2><p>{deploymentActionDialog.detail}</p><div className="modal-actions"><button type="button" onClick={() => setPendingDeploymentAction(null)} disabled={deploymentActionBusy} data-tooltip={es ? "Cierra este aviso sin ejecutar la acción." : "Close this prompt without running the action."}>{es ? "Cancelar" : "Cancel"}</button><button className="danger-button" type="button" onClick={() => void runDeploymentAction(pendingDeploymentAction!)} disabled={deploymentActionBusy} data-tooltip={pendingDeploymentAction === "clear_history" ? (es ? "Confirma la eliminación del historial completado." : "Confirm removal of completed deployment history.") : pendingDeploymentAction === "kill_build" ? (es ? "Confirma la interrupción de la compilación activa." : "Confirm interruption of the active build.") : (es ? "Confirma la cancelación de los despliegues pendientes." : "Confirm cancellation of queued deployments.")}>{deploymentActionBusy ? <span className="spinner" /> : pendingDeploymentAction === "clear_history" ? <Eraser size={15} /> : pendingDeploymentAction === "kill_build" ? <Scissors size={15} /> : <Ban size={15} />}{pendingDeploymentAction === "clear_history" ? es ? "Limpiar historial" : "Clear history" : pendingDeploymentAction === "kill_build" ? es ? "Detener compilación" : "Kill Build" : es ? "Cancelar cola" : "Cancel queue"}</button></div></section></div>}
     {unlinkOpen ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal project-confirm-modal" role="alertdialog" aria-modal="true"><span className="module-kicker">{es ? "QUITAR ASOCIACIÓN" : "REMOVE PROJECT LINK"}</span><h2>{es ? `¿Quitar ${data.service.name} del proyecto?` : `Remove ${data.service.name} from this project?`}</h2><p>{es ? "No se detendrá ni borrará ningún recurso. Solo se eliminará esta asociación." : "No resources will be stopped or deleted. Only this project link will be removed."}</p><div className="modal-actions"><button type="button" onClick={() => setUnlinkOpen(false)} disabled={busy}>{es ? "Cancelar" : "Cancel"}</button><button className="danger-button" type="button" onClick={() => void unlink()} disabled={busy}>{busy ? <span className="spinner" /> : <Trash2 size={15} />}{es ? "Quitar del proyecto" : "Remove from project"}</button></div></section></div> : null}
   </main>;

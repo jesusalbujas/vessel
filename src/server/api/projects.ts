@@ -5,12 +5,16 @@ import {
   authenticatedUser,
   createVesselProjectTag,
   createVesselProject,
+  deleteGitSourceSecret,
   deleteVesselProjectEnvironmentVariable,
+  deleteVesselProjectServiceEnvironmentVariable,
   deleteVesselProject,
   listVesselProjectEnvironmentNames,
+  listVesselProjectServiceEnvironmentNames,
   listVesselProjectTags,
   gitProviderById,
   gitSourceById,
+  gitSourceSecretNames,
   listVesselProjectServices,
   listVesselProjects,
   listGitSources,
@@ -20,6 +24,9 @@ import {
   mutationUser,
   removeVesselProjectService,
   setVesselProjectEnvironmentVariable,
+  setVesselProjectServiceEnvironmentVariable,
+  setVesselProjectServiceEnvironmentVariables,
+  setGitSourceSecret,
   updateVesselProject,
   userHasPermission,
   vesselProjectById,
@@ -56,11 +63,11 @@ export function getProjects(request: Request) {
       .filter((provider) => provider.connected && (user.role === "administrator" || provider.shareWithOrganization))
       .map(({ id: providerId, provider, name, accountName }) => ({ id: providerId, provider, name, accountName }));
     if (!service.targetType) {
-      return json({ data: { project, service, resources: [], deployments: [], gitSource: null, providers } });
+      return json({ data: { project, service, resources: [], deployments: [], gitSource: null, providers, environmentSecrets: listVesselProjectServiceEnvironmentNames(service.id) } });
     }
     return listDockerContainers().then(async (containers) => {
       let deployments: Array<Omit<ReturnType<typeof listGitDeployments>[number], "logs">> = [];
-      let gitSource: { id: string; name: string; repository: string; providerId: string | null; providerType: string | null; providerName: string | null; branch: string; composePath: string; autoDeploy: boolean; triggerType: string; pollIntervalSeconds: number; watchPaths: string[]; enableSubmodules: boolean; lastStatus: string; webhookReady: boolean } | null = null;
+      let gitSource: { id: string; name: string; repository: string; providerId: string | null; providerType: string | null; providerName: string | null; branch: string; composePath: string; autoDeploy: boolean; triggerType: string; pollIntervalSeconds: number; watchPaths: string[]; enableSubmodules: boolean; lastStatus: string; webhookReady: boolean; secrets: string[] } | null = null;
       let gitComposeProject: string | null = null;
       if (service.targetType === "git" && service.targetRef) {
         const source = gitSourceById(service.targetRef);
@@ -75,7 +82,7 @@ export function getProjects(request: Request) {
           if (title) updateGitDeploymentCommitTitle(deployment.id, title);
         }
         deployments = deploymentRecords.map(({ logs: _logs, ...deployment }) => ({ ...deployment, commitTitle: deployment.commitTitle ?? (deployment.commit ? commitTitles[deployment.commit] ?? null : null) }));
-        gitSource = { id: source.id, name: source.name, repository: source.repository, providerId: source.providerId, providerType: source.providerType, providerName: source.providerName, branch: source.branch, composePath: source.composePath, autoDeploy: source.autoDeploy, triggerType: source.triggerType, pollIntervalSeconds: source.pollIntervalSeconds, watchPaths: source.watchPaths, enableSubmodules: source.enableSubmodules, lastStatus: source.lastStatus, webhookReady: Boolean(provider?.hasWebhookSecret) };
+        gitSource = { id: source.id, name: source.name, repository: source.repository, providerId: source.providerId, providerType: source.providerType, providerName: source.providerName, branch: source.branch, composePath: source.composePath, autoDeploy: source.autoDeploy, triggerType: source.triggerType, pollIntervalSeconds: source.pollIntervalSeconds, watchPaths: source.watchPaths, enableSubmodules: source.enableSubmodules, lastStatus: source.lastStatus, webhookReady: Boolean(provider?.hasWebhookSecret), secrets: gitSourceSecretNames(source.id) };
         const normalized = source.name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
         gitComposeProject = normalized.length >= 2 ? normalized : `vessel-${normalized || "app"}`;
       }
@@ -101,7 +108,7 @@ export function getProjects(request: Request) {
           createdAt: container.Created ? new Date(container.Created * 1000).toISOString() : null,
         };
       }));
-      return json({ data: { project, service, resources, deployments, gitSource, providers } });
+      return json({ data: { project, service, resources, deployments, gitSource, providers, environmentSecrets: [...new Set([...listVesselProjectServiceEnvironmentNames(service.id), ...(gitSource?.secrets ?? [])])].sort((a, b) => a.localeCompare(b)) } });
     }).catch(() => json({ error: "Could not read the project service." }, { status: 502 }));
   }
   return listDockerContainers().then((allContainers) => {
@@ -128,8 +135,10 @@ export async function postProjects(request: Request) {
   const user = mutationUser(request);
   if (!user) return json({ error: "Authentication required" }, { status: 401 });
   if (!userHasPermission(user, "projects.manage")) return json({ error: "Permission denied" }, { status: 403 });
+  if (Number(request.headers.get("content-length") ?? 0) > 262_144) return json({ error: "Request is too large" }, { status: 413 });
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.action !== "string") return json({ error: "Invalid request" }, { status: 400 });
+  if (JSON.stringify(body).length > 262_144) return json({ error: "Request is too large" }, { status: 413 });
   try {
     if (body.action === "create") {
       const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -170,6 +179,57 @@ export async function postProjects(request: Request) {
       if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name) || value.length > 16_384) return json({ error: "Project environment variable is invalid" }, { status: 400 });
       setVesselProjectEnvironmentVariable(projectId, name, value);
       return json({ ok: true, environmentNames: listVesselProjectEnvironmentNames(projectId) });
+    }
+    if (body.action === "set_service_environment") {
+      const projectId = typeof body.projectId === "string" ? body.projectId : "";
+      const serviceId = typeof body.serviceId === "string" ? body.serviceId : "";
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const value = typeof body.value === "string" ? body.value : "";
+      const service = listVesselProjectServices(projectId).find((item) => item.id === serviceId);
+      if (!service || service.kind !== "application") return json({ error: "Application service not found" }, { status: 404 });
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name) || !value || value.length > 32_768 || /\0/.test(value)) return json({ error: "Environment variable name or value is invalid" }, { status: 400 });
+      setVesselProjectServiceEnvironmentVariable(serviceId, name, value);
+      if (service.targetType === "git" && service.targetRef) setGitSourceSecret(service.targetRef, name, value);
+      return json({ ok: true, environmentSecrets: listVesselProjectServiceEnvironmentNames(serviceId) });
+    }
+    if (body.action === "set_service_environment_bulk") {
+      const projectId = typeof body.projectId === "string" ? body.projectId : "";
+      const serviceId = typeof body.serviceId === "string" ? body.serviceId : "";
+      const entries = Array.isArray(body.entries) ? body.entries : [];
+      const service = listVesselProjectServices(projectId).find((item) => item.id === serviceId);
+      if (!service || service.kind !== "application") return json({ error: "Application service not found" }, { status: 404 });
+      if (!entries.length || entries.length > 100) return json({ error: "Paste between 1 and 100 environment variables" }, { status: 400 });
+      const normalized: Array<{ name: string; value: string }> = [];
+      const names = new Set<string>();
+      for (const entry of entries) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return json({ error: "Invalid environment variable entry" }, { status: 400 });
+        const candidate = entry as Record<string, unknown>;
+        const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+        const value = typeof candidate.value === "string" ? candidate.value : null;
+        if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name) || value === null || value.length > 32_768 || /\0/.test(value)) {
+          return json({ error: "One or more environment variable names or values are invalid" }, { status: 400 });
+        }
+        if (names.has(name)) return json({ error: `Variable ${name} appears more than once` }, { status: 400 });
+        names.add(name);
+        normalized.push({ name, value });
+      }
+      setVesselProjectServiceEnvironmentVariables(serviceId, normalized);
+      if (service.targetType === "git" && service.targetRef) {
+        for (const { name, value } of normalized) setGitSourceSecret(service.targetRef, name, value);
+      }
+      return json({ ok: true, saved: normalized.length, environmentSecrets: listVesselProjectServiceEnvironmentNames(serviceId) });
+    }
+    if (body.action === "delete_service_environment") {
+      const projectId = typeof body.projectId === "string" ? body.projectId : "";
+      const serviceId = typeof body.serviceId === "string" ? body.serviceId : "";
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const service = listVesselProjectServices(projectId).find((item) => item.id === serviceId);
+      if (!service || service.kind !== "application") return json({ error: "Application service not found" }, { status: 404 });
+      const removedFromService = deleteVesselProjectServiceEnvironmentVariable(serviceId, name);
+      const wasSavedOnSource = service.targetType === "git" && service.targetRef ? gitSourceSecretNames(service.targetRef).includes(name) : false;
+      if (!removedFromService && !wasSavedOnSource) return json({ error: "Environment variable not found" }, { status: 404 });
+      if (service.targetType === "git" && service.targetRef) deleteGitSourceSecret(service.targetRef, name);
+      return json({ ok: true, environmentSecrets: listVesselProjectServiceEnvironmentNames(serviceId) });
     }
     if (body.action === "delete_environment") {
       const projectId = typeof body.projectId === "string" ? body.projectId : "";
