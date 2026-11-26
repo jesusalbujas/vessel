@@ -9,6 +9,7 @@ import { Sidebar } from "./Sidebar";
 import { ToastNotice, VESSEL_NOTICE_EVENT, type Notice } from "./ToastNotice";
 import { VesselTooltipLayer } from "./VesselTooltipLayer";
 import { ResourceNotificationBell } from "./ResourceNotificationBell";
+import { ImageDeletionWindow } from "./ImageDeletionWindow";
 
 export function AppFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -154,6 +155,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
       </div>
     </div>
     <ToastNotice notice={notice} onClose={closeNotice} />
+    <ImageDeletionWindow />
     <VesselTooltipLayer />
   </div>;
 }

@@ -3845,6 +3845,51 @@ body:has(.modal-backdrop) .vessel-run-tab-transition { transform: none !importan
 [data-theme="dark"] .image-delete-progress.is-failed { border-color: #793f4a; background: #2c1a22; }
 @media (prefers-reduced-motion: reduce) { .image-delete-progress-track > span { transition: none; }.image-delete-progress-label .icon-loader { animation: none; } }
 
+/* Image deletion remains visible across client-side navigation; it can be docked while it runs. */
+.image-delete-task-modal { width: min(620px, calc(100vw - 32px)); max-width: none; max-height: min(90vh, 720px); margin: auto; overflow: auto; color: var(--ink); }
+.image-delete-task-modal::backdrop { background: rgb(15 23 42 / .52); }
+.image-delete-task-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.image-delete-task-heading h2 { margin: 8px 0 0; }
+.image-delete-task-controls { display: flex; gap: 7px; }
+.image-delete-task-controls button { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); color: var(--muted); cursor: pointer; transition: background-color .16s ease, color .16s ease, border-color .16s ease; }
+.image-delete-task-controls button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+.image-delete-task-modal .image-delete-progress { margin-top: 18px; }
+.image-delete-progress-label { align-items: center; }
+.image-delete-progress-label > span { line-height: 1.45; }
+.image-delete-progress-label > strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.image-delete-progress-bar, .image-delete-mini-copy progress { display: block; width: 100%; height: 10px; appearance: none; border: 0; border-radius: 999px; overflow: clip; background: #e4e8f2; box-shadow: inset 0 1px 2px rgb(0 0 0 / .1); }
+.image-delete-progress-bar::-webkit-progress-bar, .image-delete-mini-copy progress::-webkit-progress-bar { border-radius: 999px; background: #e4e8f2; }
+.image-delete-progress-bar::-webkit-progress-value, .image-delete-mini-copy progress::-webkit-progress-value { border-radius: 999px; background: var(--image-delete-fill, linear-gradient(90deg, #4169e1, #5146e5)); transition: width .24s ease; }
+.image-delete-progress-bar::-moz-progress-bar, .image-delete-mini-copy progress::-moz-progress-bar { border-radius: 999px; background: var(--image-delete-fill, linear-gradient(90deg, #4169e1, #5146e5)); transition: width .24s ease; }
+.image-delete-progress.is-completed { --image-delete-fill: linear-gradient(90deg, #18a05e, #30bf78); }
+.image-delete-progress.is-failed { --image-delete-fill: linear-gradient(90deg, #dc5965, #b42332); }
+.image-delete-progress.is-completed .image-delete-progress-label > strong { color: #17834f; }
+.image-delete-progress.is-failed .image-delete-progress-label > strong { color: #c52f40; }
+.image-delete-task-modal .modal-actions { justify-content: flex-end; margin-top: 18px; }
+.image-delete-window-minimized { position: fixed; z-index: 1399; right: 24px; bottom: 24px; width: min(360px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised); box-shadow: 0 16px 44px rgb(18 27 46 / .23); animation: toast-in .32s cubic-bezier(.22, 1, .36, 1) both; }
+.image-delete-mini-open { display: flex; width: 100%; min-width: 0; align-items: center; gap: 12px; padding: 13px 14px; border: 0; border-radius: inherit; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.image-delete-mini-open:hover { background: var(--surface-soft); }
+.image-delete-mini-icon { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent-strong); }
+.image-delete-mini-copy { display: grid; min-width: 0; flex: 1; gap: 7px; }
+.image-delete-mini-copy strong { color: var(--ink); font-size: 12px; }
+.image-delete-mini-copy small { color: var(--muted); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.image-delete-mini-copy progress { height: 5px; }
+.image-delete-mini-percent { flex: 0 0 auto; color: var(--accent-strong); font-size: 15px; font-variant-numeric: tabular-nums; }
+.image-delete-mini-open > svg { flex: 0 0 auto; color: var(--muted); }
+[data-theme="dark"] .image-delete-task-controls button { border-color: #3a4963; background: #111a29; color: #b8c4d8; }
+[data-theme="dark"] .image-delete-progress-bar, [data-theme="dark"] .image-delete-mini-copy progress,
+[data-theme="dark"] .image-delete-progress-bar::-webkit-progress-bar, [data-theme="dark"] .image-delete-mini-copy progress::-webkit-progress-bar { background: #29364b; }
+[data-theme="dark"] .image-delete-window-minimized { border-color: #3a4963; background: #182235; }
+@media (max-width: 520px) {
+  .image-delete-window-minimized { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
+  .image-delete-task-modal { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .image-delete-window-minimized { animation: none; }
+  .image-delete-progress-bar::-webkit-progress-value, .image-delete-mini-copy progress::-webkit-progress-value,
+  .image-delete-progress-bar::-moz-progress-bar, .image-delete-mini-copy progress::-moz-progress-bar { transition: none; }
+}
+
 /* Administrator-only change history. */
 .audit-page { display: grid; gap: 18px; }
 .audit-summary { display: flex; align-items: center; gap: 14px; padding: 17px 20px; }

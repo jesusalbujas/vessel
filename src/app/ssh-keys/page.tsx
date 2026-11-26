@@ -42,8 +42,31 @@ export default function SSHKeysPage() {
 
   function shellQuote(value: string) { return `'${value.replace(/'/g, `'\\''`)}'`; }
   async function copyText(value: string, title: string) {
-    try { await navigator.clipboard.writeText(value); notifyVessel({ kind: "success", title }); }
-    catch { notifyVessel({ kind: "error", title: es ? "No se pudo copiar" : "Could not copy" }); }
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        notifyVessel({ kind: "success", title });
+        return;
+      }
+    } catch { /* Use the user-initiated fallback below for HTTP and restricted clipboard APIs. */ }
+
+    const field = document.createElement("textarea");
+    field.value = value;
+    field.setAttribute("readonly", "");
+    field.setAttribute("aria-hidden", "true");
+    field.style.position = "fixed";
+    field.style.top = "0";
+    field.style.left = "-9999px";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    field.setSelectionRange(0, value.length);
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch { copied = false; }
+    field.remove();
+    notifyVessel(copied
+      ? { kind: "success", title }
+      : { kind: "error", title: es ? "No se pudo copiar" : "Could not copy", detail: es ? "Selecciona la clave pública y cópiala manualmente." : "Select the public key and copy it manually." });
   }
   function downloadCommands() {
     if (!generatedCommands.length) return;

@@ -6,6 +6,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, CalendarClock, Check, ChevronDown, Che
 import type { ContainerRuntimeSettings, RestartPolicy, Service, ServiceCategory, ServiceStatus } from "@/lib/services";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { notifyVessel } from "./ToastNotice";
+import { runImageDeletion } from "@/lib/image-deletion-client";
 import { ContainerListLoadingSkeleton, ResourceListLoadingSkeleton } from "./LoadingSkeletons";
 import RuntimeSettingsEditor from "./RuntimeSettingsEditor";
 import ContainerTerminal from "./ContainerTerminal";
@@ -181,7 +182,6 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
   const [imageDeleteConfirm, setImageDeleteConfirm] = useState(false);
   const [imageDeleting, setImageDeleting] = useState(false);
-  const [imageDeleteProgress, setImageDeleteProgress] = useState<{ phase: "checking" | "deleting" | "completed" | "failed"; current: number; total: number; completed: number; percent: number; imageId?: string; error?: string } | null>(null);
   const [imagePullName, setImagePullName] = useState("");
   const [imagePullRegistry, setImagePullRegistry] = useState("docker-hub");
   const [registries, setRegistries] = useState<RegistryOption[]>([]);
@@ -363,68 +363,27 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
     });
   }
 
-  async function deleteSelectedImages() {
+  function deleteSelectedImages() {
     const imageIds = [...selectedImages];
     if (!imageIds.length || imageDeleting) return;
     setImageDeleting(true);
-    setImageDeleteProgress({ phase: "checking", current: 0, total: imageIds.length, completed: 0, percent: 0 });
-    let failure = "";
-    let deletedIds: string[] = [];
-    const handleEvent = (event: { type?: string; total?: number; current?: number; completed?: number; percent?: number; imageId?: string; error?: string; used?: { container?: string }[]; deleted?: string[] }) => {
-      if (event.type === "checking") {
-        setImageDeleteProgress({ phase: "checking", current: 0, total: event.total ?? imageIds.length, completed: 0, percent: 0 });
-      } else if (event.type === "ready") {
-        setImageDeleteProgress({ phase: "deleting", current: 0, total: event.total ?? imageIds.length, completed: 0, percent: 0 });
-      } else if (event.type === "item" || event.type === "progress") {
-        setImageDeleteProgress({ phase: "deleting", current: event.current ?? 0, total: event.total ?? imageIds.length, completed: event.completed ?? 0, percent: event.percent ?? 0, imageId: event.imageId });
-      } else if (event.type === "done") {
-        deletedIds = event.deleted ?? imageIds;
-        setImageDeleteProgress({ phase: "completed", current: event.total ?? imageIds.length, total: event.total ?? imageIds.length, completed: event.completed ?? deletedIds.length, percent: 100 });
-      } else if (event.type === "error") {
-        const used = (event.used ?? []).map((item) => item.container).filter(Boolean).join(", ");
-        failure = used ? `${event.error ?? "No fue posible borrar las imágenes"}: ${used}` : event.error ?? "No fue posible borrar las imágenes";
-        deletedIds = event.deleted ?? [];
-        setImageDeleteProgress({ phase: "failed", current: event.current ?? event.completed ?? 0, total: event.total ?? imageIds.length, completed: event.completed ?? deletedIds.length, percent: event.percent ?? 0, imageId: event.imageId, error: failure });
+    setImageDeleteConfirm(false);
+    void runImageDeletion(imageIds).then(async ({ deletedIds, error }) => {
+      if (!error) {
+        setSelectedImages(new Set());
+        const refresh = await fetch("/api/resources?type=images", { cache: "no-store" });
+        const refreshed = await refresh.json();
+        setImages(refreshed.data ?? []);
+        setToast({ kind: "success", message: `${deletedIds.length} imagen(es) eliminada(s).` });
+      } else {
+        if (deletedIds.length) {
+          const deleted = new Set(deletedIds);
+          setSelectedImages((current) => new Set([...current].filter((id) => !deleted.has(id))));
+          void fetch("/api/resources?type=images", { cache: "no-store" }).then((response) => response.json()).then((payload) => setImages(payload.data ?? [])).catch(() => undefined);
+        }
+        setToast({ kind: "error", message: deletedIds.length ? `${deletedIds.length} imagen(es) eliminada(s) antes del error. ${error}` : error });
       }
-    };
-    try {
-      const response = await fetch("/api/resources", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ imageIds }) });
-      if (!response.ok) {
-        const payload = await response.json();
-        const used = (payload.used ?? []).map((item: { container?: string }) => item.container).filter(Boolean).join(", ");
-        throw new Error(used ? `${payload.error}: ${used}` : (payload.error ?? "No fue posible borrar las imágenes"));
-      }
-      if (!response.body) throw new Error("No se recibió el progreso del borrado");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) if (line.trim()) handleEvent(JSON.parse(line));
-        if (done) break;
-      }
-      if (buffer.trim()) handleEvent(JSON.parse(buffer));
-      if (failure) throw new Error(failure);
-      setSelectedImages(new Set());
-      const refresh = await fetch("/api/resources?type=images", { cache: "no-store" });
-      const refreshed = await refresh.json();
-      setImages(refreshed.data ?? []);
-      setToast({ kind: "success", message: `${deletedIds.length} imagen(es) eliminada(s).` });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "No fue posible borrar las imágenes";
-      setImageDeleteProgress((current) => current?.phase === "failed" ? current : { phase: "failed", current: current?.current ?? 0, total: current?.total ?? imageIds.length, completed: current?.completed ?? 0, percent: current?.percent ?? 0, error: message });
-      if (deletedIds.length) {
-        const deleted = new Set(deletedIds);
-        setSelectedImages((current) => new Set([...current].filter((id) => !deleted.has(id))));
-        void fetch("/api/resources?type=images", { cache: "no-store" }).then((response) => response.json()).then((payload) => setImages(payload.data ?? [])).catch(() => undefined);
-      }
-      setToast({ kind: "error", message: deletedIds.length ? `${deletedIds.length} imagen(es) eliminada(s) antes del error. ${message}` : message });
-    } finally {
-      setImageDeleting(false);
-    }
+    }).catch((error: unknown) => setToast({ kind: "error", message: error instanceof Error ? error.message : "No fue posible iniciar el borrado." })).finally(() => setImageDeleting(false));
   }
 
   async function deleteSelectedVolume() {
@@ -1194,17 +1153,9 @@ export default function InventoryWorkspace({ initialView }: { initialView: "cont
       {deleteVolume ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal volume-modal" role="alertdialog" aria-modal="true" aria-labelledby="volume-delete-title"><span className="modal-kicker"><Icon name="alert" size={14} />Docker · {t("volumes")}</span><h2 id="volume-delete-title">{language === "es" ? "Eliminar volumen" : "Delete volume"}</h2><p>{language === "es" ? "Esta acción borra permanentemente los datos almacenados en" : "This permanently removes all data stored in"} <strong>{deleteVolume.Name}</strong>. {language === "es" ? "No es posible deshacerla." : "It cannot be undone."}</p><label className="modal-field"><span>{language === "es" ? "Escribe el nombre exacto para confirmar" : "Type the exact name to confirm"}</span><input value={volumeConfirmName} onChange={(event) => setVolumeConfirmName(event.target.value)} autoComplete="off" spellCheck={false} /></label><div className="modal-actions"><button type="button" onClick={() => setDeleteVolume(null)} disabled={volumeDeleting}>{t("cancel")}</button><button className="danger-button" type="button" onClick={deleteSelectedVolume} disabled={volumeDeleting || volumeConfirmName !== deleteVolume.Name || Boolean(deleteVolume.usedBy?.length)}><Icon name={volumeDeleting ? "loader" : "alert"} size={15} />{volumeDeleting ? (language === "es" ? "Eliminando…" : "Deleting…") : t("delete")}</button></div></section></div> : null}
       {imageDeleteConfirm ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal image-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="image-delete-title">
         <span className="modal-kicker"><Icon name="image" size={14} />Docker · {language === "es" ? "Imágenes" : "Images"}</span>
-        <h2 id="image-delete-title">{imageDeleteProgress?.phase === "completed" ? (language === "es" ? "Borrado completado" : "Deletion complete") : imageDeleteProgress?.phase === "failed" ? (language === "es" ? "Borrado detenido" : "Deletion stopped") : language === "es" ? "Borrar imágenes seleccionadas" : "Delete selected images"}</h2>
-        {!imageDeleteProgress ? <p>{language === "es" ? <>¿Confirmas borrar <strong>{selectedImages.size} imagen(es)</strong>? El servidor verificará todos los contenedores, incluso los inactivos. Si alguna imagen está en uso, no se borrará ninguna.</> : <>Delete <strong>{selectedImages.size} selected image(s)</strong>? Vessel checks all containers, including stopped ones, before deleting any image.</>}</p> : null}
-        {imageDeleteProgress ? <div className={`image-delete-progress is-${imageDeleteProgress.phase}`} aria-live="polite">
-          <div className="image-delete-progress-label">{imageDeleteProgress.phase === "checking" ? <span><Icon name="loader" size={15} />{language === "es" ? "Comprobando contenedores e imágenes…" : "Checking containers and images…"}</span> : imageDeleteProgress.phase === "deleting" ? <span><Icon name="loader" size={15} />{language === "es" ? `Borrando ${imageDeleteProgress.current} de ${imageDeleteProgress.total}` : `Deleting ${imageDeleteProgress.current} of ${imageDeleteProgress.total}`}</span> : imageDeleteProgress.phase === "completed" ? <span><Icon name="check" size={15} />{language === "es" ? `${imageDeleteProgress.completed} de ${imageDeleteProgress.total} imágenes borradas` : `${imageDeleteProgress.completed} of ${imageDeleteProgress.total} images deleted`}</span> : <span><Icon name="alert" size={15} />{language === "es" ? `${imageDeleteProgress.completed} de ${imageDeleteProgress.total} imágenes borradas` : `${imageDeleteProgress.completed} of ${imageDeleteProgress.total} images deleted`}</span>}</div>
-          <div className="image-delete-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={imageDeleteProgress.percent}><span style={{ width: `${imageDeleteProgress.percent}%` }} /></div>
-          <div className="image-delete-progress-meta"><span>{imageDeleteProgress.phase === "checking" ? (language === "es" ? "No se borrará ninguna si alguna está en uso." : "Nothing is removed if an image is in use.") : imageDeleteProgress.phase === "deleting" ? imageDeleteProgress.imageId ? `${language === "es" ? "Imagen actual" : "Current image"}: ${imageDeleteProgress.imageId.slice(0, 24)}…` : (language === "es" ? "Preparando borrado…" : "Preparing deletion…") : imageDeleteProgress.phase === "completed" ? (language === "es" ? "Todas las imágenes seleccionadas fueron procesadas." : "All selected images were processed.") : imageDeleteProgress.error}</span><strong>{imageDeleteProgress.percent}%</strong></div>
-        </div> : null}
-        <div className="modal-actions">
-          {!imageDeleting ? <button type="button" onClick={() => { setImageDeleteConfirm(false); setImageDeleteProgress(null); }}>{imageDeleteProgress ? (language === "es" ? "Cerrar" : "Close") : t("cancel")}</button> : null}
-          {!imageDeleteProgress || imageDeleting ? <button className="danger-button" type="button" onClick={deleteSelectedImages} disabled={imageDeleting || !selectedImages.size}>{imageDeleting ? <><Icon name="loader" size={15} />{imageDeleteProgress?.phase === "checking" ? (language === "es" ? "Comprobando…" : "Checking…") : (language === "es" ? "Borrando…" : "Deleting…")}</> : <><Icon name="alert" size={15} />{language === "es" ? "Confirmar borrado" : "Confirm deletion"}</>}</button> : null}
-        </div>
+        <h2 id="image-delete-title">{language === "es" ? "Borrar imágenes seleccionadas" : "Delete selected images"}</h2>
+        <p>{language === "es" ? <>¿Confirmas borrar <strong>{selectedImages.size} imagen(es)</strong>? El servidor verificará todos los contenedores, incluso los inactivos. Si alguna imagen está en uso, no se borrará ninguna.</> : <>Delete <strong>{selectedImages.size} selected image(s)</strong>? Vessel checks all containers, including stopped ones, before deleting any image.</>}</p>
+        <div className="modal-actions"><button type="button" onClick={() => setImageDeleteConfirm(false)} disabled={imageDeleting}>{t("cancel")}</button><button className="danger-button" type="button" onClick={deleteSelectedImages} disabled={imageDeleting || !selectedImages.size}>{imageDeleting ? <><Icon name="loader" size={15} />{language === "es" ? "Iniciando…" : "Starting…"}</> : <><Icon name="alert" size={15} />{language === "es" ? "Confirmar borrado" : "Confirm deletion"}</>}</button></div>
       </section></div> : null}
 
       {newServiceOpen ? <div className="modal-backdrop" role="presentation"><section className="confirm-modal edit-modal new-service-modal" role="dialog" aria-modal="true" aria-labelledby="new-service-title">
